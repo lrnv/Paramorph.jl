@@ -5,7 +5,9 @@ using LinearAlgebra
 
 export @paramorph, transformed_type, transformation_schema, constraint, unconstrain,
     intrinsic_dimension, constraint_with_logjac, closed_lower, nonnegative,
-    bounded_interval, correlation_matrix, repeat_transform, joint_transform, polytope
+    bounded_interval, correlation_matrix, positive_definite_matrix, variogram_matrix,
+    positive_vector_with_sum_below, asymmetric_mixed, repeat_transform,
+    joint_transform, polytope
 
 include("transforms.jl")
 
@@ -88,6 +90,11 @@ transformed_type(::TransformVariables.UnitVectorNorm, ::Type{T}) where {T} = Tup
 transformed_type(::TransformVariables.CorrCholeskyFactor, ::Type{T}) where {T} =
     UpperTriangular{T,Matrix{T}}
 transformed_type(::CorrelationMatrix, ::Type{T}) where {T} = Matrix{T}
+transformed_type(::PositiveDefiniteMatrix, ::Type{T}) where {T} = Matrix{T}
+transformed_type(::VariogramMatrix, ::Type{T}) where {T} = Matrix{T}
+transformed_type(::PositiveVectorWithSumBelow, ::Type{T}) where {T} = Vector{T}
+transformed_type(::AsymmetricMixed, ::Type{T}) where {T} =
+    NamedTuple{(:θ₁, :θ₂),Tuple{T,T}}
 transformed_type(t::RepeatedTransform, ::Type{T}) where {T} =
     Vector{transformed_type(t.inner, T)}
 transformed_type(t::TransformVariables.Constant, ::Type) = typeof(t.value)
@@ -122,6 +129,8 @@ function _is_transform_expr(expr)
         :as, :UnitVector, :unit_vector_norm, :UnitSimplex,
         :CorrCholeskyFactor, :corr_cholesky_factor, :Constant, :CustomTransform,
         :closed_lower, :nonnegative, :bounded_interval, :correlation_matrix,
+        :positive_definite_matrix, :variogram_matrix,
+        :positive_vector_with_sum_below, :asymmetric_mixed,
         :repeat_transform, :joint_transform, :polytope,
     )
 end
@@ -133,7 +142,11 @@ function _storage_type_expr(expr, numeric_type)
     name == :unit_vector_norm && return :(Tuple{Vector{$numeric_type}, $numeric_type})
     name in (:CorrCholeskyFactor, :corr_cholesky_factor) &&
         return :(Paramorph.LinearAlgebra.UpperTriangular{$numeric_type, Matrix{$numeric_type}})
-    name == :correlation_matrix && return :(Matrix{$numeric_type})
+    name in (:correlation_matrix, :positive_definite_matrix, :variogram_matrix) &&
+        return :(Matrix{$numeric_type})
+    name == :positive_vector_with_sum_below && return :(Vector{$numeric_type})
+    name == :asymmetric_mixed &&
+        return :(NamedTuple{(:θ₁, :θ₂),Tuple{$numeric_type,$numeric_type}})
     name in (:closed_lower, :nonnegative, :bounded_interval) && return numeric_type
     name == :joint_transform && error(
         "@paramorph cannot infer a joint transformation's output type; use a schema override",

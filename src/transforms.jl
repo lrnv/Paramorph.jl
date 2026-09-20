@@ -103,6 +103,217 @@ function TransformVariables.inverse_at!(x::AbstractVector, index,
     return TransformVariables.inverse_at!(x, index, t.factor, U)
 end
 
+# General symmetric positive-definite matrices. Coordinates are the lower
+# triangle of a Cholesky factor; diagonal coordinates are exponentiated.
+struct PositiveDefiniteMatrix <: TransformVariables.VectorTransform
+    n::Int
+    function PositiveDefiniteMatrix(n::Integer)
+        n > 0 || throw(ArgumentError("matrix dimension must be positive"))
+        new(Int(n))
+    end
+end
+
+"""`positive_definite_matrix(n)` transforms coordinates into an `n × n` SPD matrix."""
+positive_definite_matrix(n) = PositiveDefiniteMatrix(n)
+TransformVariables.dimension(t::PositiveDefiniteMatrix) = t.n * (t.n + 1) ÷ 2
+
+function _positive_definite_value(t::PositiveDefiniteMatrix, x)
+    T = eltype(x)
+    L = zeros(T, t.n, t.n)
+    k = firstindex(x)
+    for j in 1:t.n, i in j:t.n
+        L[i, j] = i == j ? exp(x[k]) : x[k]
+        k += 1
+    end
+    return L * transpose(L)
+end
+
+function TransformVariables.transform_with(flag::TransformVariables.NoLogJac,
+        t::PositiveDefiniteMatrix, x::AbstractVector, index)
+    n = TransformVariables.dimension(t)
+    value = _positive_definite_value(t, @view x[index:(index + n - 1)])
+    return value, flag, index + n
+end
+function TransformVariables.transform_with(::TransformVariables.LogJac,
+        t::PositiveDefiniteMatrix, x::AbstractVector, index)
+    n = TransformVariables.dimension(t)
+    coordinates = @view x[index:(index + n - 1)]
+    flatten(S) = [S[i, j] for j in 1:t.n for i in j:t.n]
+    value, logjac = TransformVariables.value_and_logjac_forwarddiff(
+        Base.Fix1(_positive_definite_value, t), coordinates; flatten,
+    )
+    return value, logjac, index + n
+end
+TransformVariables.inverse_eltype(::PositiveDefiniteMatrix,
+    ::Type{M}) where {T,M<:AbstractMatrix{T}} = float(T)
+
+function TransformVariables.inverse_at!(x::AbstractVector, index,
+        t::PositiveDefiniteMatrix, S::AbstractMatrix)
+    size(S) == (t.n, t.n) || throw(DimensionMismatch("expected a $(t.n) × $(t.n) matrix"))
+    isapprox(S, transpose(S)) || throw(DomainError(S, "matrix must be symmetric"))
+    L = try
+        cholesky(Symmetric(S)).L
+    catch error
+        error isa LinearAlgebra.PosDefException || rethrow()
+        throw(DomainError(S, "matrix must be positive definite"))
+    end
+    for j in 1:t.n, i in j:t.n
+        x[index] = i == j ? log(L[i, j]) : L[i, j]
+        index += 1
+    end
+    return index
+end
+
+# Strict Hüsler--Reiss variograms are linear images of SPD Gram matrices on
+# d-1 anchored points.
+struct VariogramMatrix <: TransformVariables.VectorTransform
+    d::Int
+    gram::PositiveDefiniteMatrix
+    function VariogramMatrix(d::Integer)
+        d >= 2 || throw(ArgumentError("variogram dimension must be at least two"))
+        new(Int(d), PositiveDefiniteMatrix(Int(d) - 1))
+    end
+end
+
+"""`variogram_matrix(d)` transforms coordinates into a strict `d × d` variogram."""
+variogram_matrix(d) = VariogramMatrix(d)
+TransformVariables.dimension(t::VariogramMatrix) = TransformVariables.dimension(t.gram)
+
+function _gram_to_variogram(S)
+    n = size(S, 1)
+    T = eltype(S)
+    Γ = zeros(T, n + 1, n + 1)
+    for j in 1:n, i in 1:n
+        Γ[i, j] = S[i, i] + S[j, j] - 2S[i, j]
+    end
+    for i in 1:n
+        Γ[i, n + 1] = Γ[n + 1, i] = S[i, i]
+    end
+    return Γ
+end
+
+function _variogram_to_gram(t::VariogramMatrix, Γ)
+    size(Γ) == (t.d, t.d) || throw(DimensionMismatch("expected a $(t.d) × $(t.d) matrix"))
+    isapprox(Γ, transpose(Γ)) || throw(DomainError(Γ, "variogram must be symmetric"))
+    all(i -> isapprox(Γ[i, i], zero(Γ[i, i])), 1:t.d) ||
+        throw(DomainError(Γ, "variogram must have a zero diagonal"))
+    n = t.d - 1
+    return [((Γ[i, t.d] + Γ[j, t.d] - Γ[i, j]) / 2) for i in 1:n, j in 1:n]
+end
+
+_variogram_value(t::VariogramMatrix, x) =
+    _gram_to_variogram(_positive_definite_value(t.gram, x))
+
+function TransformVariables.transform_with(flag::TransformVariables.NoLogJac,
+        t::VariogramMatrix, x::AbstractVector, index)
+    n = TransformVariables.dimension(t)
+    value = _variogram_value(t, @view x[index:(index + n - 1)])
+    return value, flag, index + n
+end
+function TransformVariables.transform_with(::TransformVariables.LogJac,
+        t::VariogramMatrix, x::AbstractVector, index)
+    n = TransformVariables.dimension(t)
+    coordinates = @view x[index:(index + n - 1)]
+    flatten(Γ) = [Γ[i, j] for j in 1:t.d for i in (j + 1):t.d]
+    value, logjac = TransformVariables.value_and_logjac_forwarddiff(
+        Base.Fix1(_variogram_value, t), coordinates; flatten,
+    )
+    return value, logjac, index + n
+end
+TransformVariables.inverse_eltype(::VariogramMatrix,
+    ::Type{M}) where {T,M<:AbstractMatrix{T}} = float(T)
+function TransformVariables.inverse_at!(x::AbstractVector, index,
+        t::VariogramMatrix, Γ::AbstractMatrix)
+    S = _variogram_to_gram(t, Γ)
+    return TransformVariables.inverse_at!(x, index, t.gram, S)
+end
+
+# A d-vector in the strict positive orthant with a strict upper bound on its
+# sum, represented by the first d entries of a scaled (d+1)-simplex.
+struct PositiveVectorWithSumBelow{L} <: TransformVariables.VectorTransform
+    limit::L
+    d::Int
+    simplex::TransformVariables.UnitSimplex
+end
+
+function positive_vector_with_sum_below(limit, d::Integer)
+    limit > zero(limit) || throw(ArgumentError("sum limit must be positive"))
+    d > 0 || throw(ArgumentError("vector dimension must be positive"))
+    return PositiveVectorWithSumBelow(limit, Int(d), TransformVariables.UnitSimplex(Int(d) + 1))
+end
+TransformVariables.dimension(t::PositiveVectorWithSumBelow) = t.d
+
+function _sum_bounded_value(t::PositiveVectorWithSumBelow, x)
+    simplex = TransformVariables.transform(t.simplex, x)
+    return t.limit .* simplex[1:t.d]
+end
+function TransformVariables.transform_with(flag::TransformVariables.NoLogJac,
+        t::PositiveVectorWithSumBelow, x::AbstractVector, index)
+    value = _sum_bounded_value(t, @view x[index:(index + t.d - 1)])
+    return value, flag, index + t.d
+end
+function TransformVariables.transform_with(::TransformVariables.LogJac,
+        t::PositiveVectorWithSumBelow, x::AbstractVector, index)
+    coordinates = @view x[index:(index + t.d - 1)]
+    value, logjac = TransformVariables.value_and_logjac_forwarddiff(
+        Base.Fix1(_sum_bounded_value, t), coordinates,
+    )
+    return value, logjac, index + t.d
+end
+TransformVariables.inverse_eltype(::PositiveVectorWithSumBelow,
+    ::Type{V}) where {T,V<:AbstractVector{T}} = float(T)
+function TransformVariables.inverse_at!(x::AbstractVector, index,
+        t::PositiveVectorWithSumBelow, values::AbstractVector)
+    length(values) == t.d || throw(DimensionMismatch("expected $(t.d) values"))
+    all(>=(zero(eltype(values))), values) || throw(DomainError(values, "values must be nonnegative"))
+    slack = t.limit - sum(values)
+    slack >= zero(slack) || throw(DomainError(values, "values must sum to at most $(t.limit)"))
+    simplex = [values ./ t.limit; slack / t.limit]
+    return TransformVariables.inverse_at!(x, index, t.simplex, simplex)
+end
+
+# Smooth square-to-quadrilateral chart used by the asymmetric Mixed family.
+struct AsymmetricMixed <: TransformVariables.VectorTransform
+    box::TransformVariables.TransformTuple
+end
+asymmetric_mixed() = AsymmetricMixed(TransformVariables.as((u=TransformVariables.as𝕀, v=TransformVariables.as𝕀)))
+TransformVariables.dimension(::AsymmetricMixed) = 2
+
+function _asymmetric_mixed_value(t::AsymmetricMixed, x)
+    p = TransformVariables.transform(t.box, x)
+    return (; θ₁=p.u * (3 - p.v) / 2, θ₂=(p.v - p.u) / 2)
+end
+function TransformVariables.transform_with(flag::TransformVariables.NoLogJac,
+        t::AsymmetricMixed, x::AbstractVector, index)
+    value = _asymmetric_mixed_value(t, @view x[index:(index + 1)])
+    return value, flag, index + 2
+end
+function TransformVariables.transform_with(::TransformVariables.LogJac,
+        t::AsymmetricMixed, x::AbstractVector, index)
+    coordinates = @view x[index:(index + 1)]
+    flatten(p) = [p.θ₁, p.θ₂]
+    value, logjac = TransformVariables.value_and_logjac_forwarddiff(
+        Base.Fix1(_asymmetric_mixed_value, t), coordinates; flatten,
+    )
+    return value, logjac, index + 2
+end
+function TransformVariables.inverse_eltype(::AsymmetricMixed,
+        ::Type{NamedTuple{N,Tuple{T,T}}}) where {N,T}
+    return float(T)
+end
+function TransformVariables.inverse_at!(x::AbstractVector, index,
+        t::AsymmetricMixed, p::NamedTuple)
+    hasproperty(p, :θ₁) && hasproperty(p, :θ₂) ||
+        throw(ArgumentError("expected fields θ₁ and θ₂"))
+    discriminant = (3 - 2p.θ₂)^2 - 8p.θ₁
+    discriminant >= zero(discriminant) || throw(DomainError(p, "invalid asymmetric Mixed parameters"))
+    u = ((3 - 2p.θ₂) - sqrt(discriminant)) / 2
+    v = u + 2p.θ₂
+    coordinates = TransformVariables.inverse(t.box, (; u, v))
+    x[index:(index + 1)] .= coordinates
+    return index + 2
+end
+
 # Implementation type for `repeat_transform`.
 struct RepeatedTransform{S} <: TransformVariables.VectorTransform
     inner::S
