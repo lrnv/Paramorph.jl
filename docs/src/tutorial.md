@@ -52,19 +52,20 @@ components are positive and sum to one.
 
 ## 2. A first constrained structure
 
-With Paramorph, write the transformation after the field type as a second `::`
-annotation:
+With Paramorph, write only the transformation after `::`. Paramorph appends a
+numeric type parameter named `T` to the parameters in the declaration and
+derives every stored field type from its transformation and `T`:
 
 ```@example tutorial
 using Paramorph
 
-@paramorph struct MixtureParameters{T, N}
-    location::T::asℝ
-    scale::T::asℝ₊
-    weights::Vector{T}::UnitSimplex(N)
+@paramorph struct MixtureParameters{N}
+    location::asℝ
+    scale::asℝ₊
+    weights::UnitSimplex(N)
 end
 
-P = MixtureParameters{Float64, 3}
+P = MixtureParameters{3, Float64} # the macro generated MixtureParameters{N, T}
 dimension_intrinsique(P)
 ```
 
@@ -94,10 +95,10 @@ constructor. You may provide constrained values directly, but
 TransformVariables validates them before the object is created:
 
 ```@example tutorial
-MixtureParameters{Float64, 3}(0.0, 2.0, [0.2, 0.3, 0.5])
+MixtureParameters{3, Float64}(0.0, 2.0, [0.2, 0.3, 0.5])
 
 try
-    MixtureParameters{Float64, 3}(0.0, -2.0, [0.2, 0.3, 0.5])
+    MixtureParameters{3, Float64}(0.0, -2.0, [0.2, 0.3, 0.5])
 catch error
     error isa DomainError
 end
@@ -111,24 +112,101 @@ A value type parameter can record a dimension without changing the vector's
 storage type:
 
 ```@example tutorial
-@paramorph struct SizedVector{T, D}
-    values::Vector{T}::as(Vector, D)
+@paramorph struct SizedVector{D}
+    values::as(Vector, D)
 end
 
-v = SizedVector{Float64, 3}([1.0, 2.0, 3.0])
+v = SizedVector{3}([1.0, 2.0, 3.0]) # T is inferred as Float64 here
 typeof(v.values)
 
 try
-    SizedVector{Float64, 3}([1.0, 2.0])
+    SizedVector{3, Float64}([1.0, 2.0])
 catch error
     error isa DomainError
 end
 ```
 
 `D` is a phantom parameter: it belongs to the structure type, while `values`
-remains an ordinary `Vector{Float64}`. You must specify `D` in the constructed
-type because Julia cannot infer it from `Vector{T}` alone. The constructor then
-guarantees that it agrees with `length(values)`.
+remains an ordinary `Vector{Float64}`. `D` must be specified because Julia
+cannot infer it from `Vector{T}` alone, while the generated trailing `T` can be
+inferred during direct construction. The constructor guarantees that `D`
+agrees with `length(values)`.
+
+### Auxiliary fields and prototypes
+
+A field annotated with an ordinary Julia type is stored in the object but does
+not belong to its unconstrained parameter vector:
+
+```@example tutorial
+@paramorph struct LabeledMixture{N}
+    parameters::MixtureParameters{N, T}
+    label::String
+    observation_count::Int
+end
+
+prototype = LabeledMixture{3}(
+    MixtureParameters{3}(0.0, 2.0, [0.2, 0.3, 0.5]),
+    "control",
+    120,
+)
+
+length(unconstrain(prototype)) == dimension_intrinsique(typeof(prototype))
+```
+
+`parameters` is another Paramorph structure, so it remains part of the
+parameterization. `label` and `observation_count` are auxiliary fields and are
+excluded.
+
+A type alone does not contain values for auxiliary fields unless their
+declarations provide defaults. Without defaults, reconstruction must use an
+existing object as a prototype:
+
+```@example tutorial
+x = unconstrain(prototype)
+updated = constraint(prototype, x .+ 0.1)
+
+updated.label == prototype.label
+updated.observation_count == prototype.observation_count
+updated.parameters != prototype.parameters
+```
+
+Auxiliary fields are preserved recursively, including inside nested Paramorph
+structures. Calling `constraint(typeof(prototype), x)` is rejected because
+there is no source for their values. The type-based form remains available for
+structures whose complete nested parameterization contains no auxiliary field.
+
+Defaults use Julia's usual `field::Type = value` syntax:
+
+```@example tutorial
+@paramorph struct ConfiguredVector{D}
+    values::as(Vector, D)
+    weight::T = one(T)
+    label::String = "default"
+end
+
+configured = constraint(ConfiguredVector{3, Float64}, zeros(3))
+(configured.weight, configured.label)
+```
+
+Default expressions may refer to user type parameters and to the generated
+numeric type parameter `T`. They are evaluated when reconstruction occurs.
+They apply only to auxiliary fields: transformed fields and nested Paramorph
+fields obtain their values from the unconstrained vector and therefore cannot
+declare defaults.
+
+When a prototype is supplied, its auxiliary values take precedence over the
+declared defaults. This lets one customize an object once and preserve that
+context across subsequent transformations:
+
+```@example tutorial
+custom = ConfiguredVector{3}(zeros(3), 2.0, "custom")
+updated_custom = constraint(custom, ones(3))
+(updated_custom.weight, updated_custom.label)
+```
+
+Type-based reconstruction also works recursively when every auxiliary field,
+including those in nested Paramorph structures, has a default. If any required
+default is missing, use the prototype form instead.
 
 ## 3. Nested structures
 
@@ -136,12 +214,12 @@ A field without a second annotation is treated as a type that already has a
 `transformation_schema`:
 
 ```@example tutorial
-@paramorph struct ModelParameters{T, N}
-    mixture::MixtureParameters{T, N}
-    negative_offset::T::asℝ₋
+@paramorph struct ModelParameters{N}
+    mixture::MixtureParameters{N, T}
+    negative_offset::asℝ₋
 end
 
-M = ModelParameters{Float64, 3}
+M = ModelParameters{3, Float64}
 x = zeros(dimension_intrinsique(M))
 m = constraint(M, x)
 
@@ -161,11 +239,11 @@ correlation matrix directly. If `U` is its result, the correlation matrix is
 ```@example tutorial
 using LinearAlgebra
 
-@paramorph struct CorrelationParameters{T, N}
-    U::UpperTriangular{T, Matrix{T}}::corr_cholesky_factor(N)
+@paramorph struct CorrelationParameters{N}
+    U::corr_cholesky_factor(N)
 end
 
-C = CorrelationParameters{Float64, 3}
+C = CorrelationParameters{3, Float64}
 c = constraint(C, zeros(dimension_intrinsique(C)))
 R = c.U' * c.U
 diag(R)
@@ -211,6 +289,14 @@ it.
 | simplex of length `N` | `UnitSimplex(N)` | `N - 1` |
 | `N × N` correlation factor | `corr_cholesky_factor(N)` | `N(N - 1)/2` |
 
+The corresponding storage types are computed by
+`transformed_type(transformation, T)`. For example:
+
+```@example tutorial
+transformed_type(UnitSimplex(3), Float32)
+transformed_type(corr_cholesky_factor(3), Float64)
+```
+
 Use `methods(as)` to discover generic constructors and Julia's help mode, for
 example `?UnitSimplex`, to read the documentation of each transformation.
 
@@ -221,7 +307,8 @@ example `?UnitSimplex`, to read the documentation of each transformation.
 - A transformation must produce a value compatible with its declared field
   type.
 - Without an explicit transformation, Paramorph calls
-  `transformation_schema(FieldType)`. The scalar default is `asℝ`; a nested
-  structure must have been declared with `@paramorph`.
+  `transformation_schema(FieldType)` only when `FieldType` is itself a
+  Paramorph structure. Other Julia-typed fields are auxiliary. Type-based
+  reconstruction requires defaults for all of them; otherwise use a prototype.
 - `asSimplex` and `asCorrelationCholesky` are not TransformVariables 0.8
   constructors. Use `UnitSimplex` and `corr_cholesky_factor` instead.
