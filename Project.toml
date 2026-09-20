@@ -3,24 +3,20 @@ uuid = "4f407bf5-e3e8-4a0e-b0aa-de5e22a062cc"
 version = "0.0.1"
 authors = ["Oskar Laverny"]
 
-[weakdeps]
-Distributions = "31c24e10-a181-5473-b8eb-7969acd0382f"
-
-[extensions]
-ParamorphDistributionsExt = "Distributions"
+[deps]
+LinearAlgebra = "37e2e46d-f89d-539d-b4ee-838fcccc9c8e"
+TransformVariables = "84d833dd-6860-57f9-a1a7-6da5db126cff"
 
 [compat]
-Aqua = "0.8"
-Distributions = "0.25"
-ForwardDiff = "0.10, 1"
+Aqua = "0.8.18"
+LinearAlgebra = "1"
 Test = "1"
+TransformVariables = "0.8.26"
 julia = "1.10"
 
 [extras]
 Aqua = "4c88cf16-eb10-579e-8560-4a9242c79595"
-Distributions = "31c24e10-a181-5473-b8eb-7969acd0382f"
-ForwardDiff = "f6369f11-7733-5829-9624-2563aa707210"
 Test = "8dfed614-e22c-5e08-85e1-65c5234f0b40"
 
 [targets]
-test = ["Aqua", "Test", "Distributions", "ForwardDiff"]
+test = ["Aqua", "Test"]

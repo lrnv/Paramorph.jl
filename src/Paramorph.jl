@@ -1,859 +1,139 @@
 module Paramorph
 
-import Base.names as names
+using TransformVariables
+using LinearAlgebra
 
-export AbstractParameterSpace, param_space
+export @constrained_struct, transformation_schema, constraint, unconstrain, dimension_intrinsique, constraint_with_logjac
 
-export Id, Pos, NonNeg, Neg, Prob, ProbOpen, ProbOpenLeft, ProbOpenRight, Lower, LowerClosed, Bounded, BoundedOpen, BoundedOpenLeft, BoundedOpenRight, Ordered, PosOrdered, Between, Simplex, SPD, Prefixed, PosVec, NonNegVec, LowerClosedVec, ProbVec, RealVec, RealMat, Correlation, GreaterThan, LowerThan, DependentProduct
-
-export dimension, constrain, unconstrain, names, example, correlation_factor
-
-"""
-    param_space(object)
-
-Return the parameter-space description associated with `object`.
-
-`param_space` is an open generic function. Paramorph.jl provides the
-space constructors and transformations, while downstream packages define
-methods for their own objects.
-
-`param_space(x)` associates an object or type with its parameter-space
-description. It is an open generic function and is normally the only function a
-downstream package extends.
-
-```julia
-import Paramorph: param_space
-
-struct MyModel
-    n::Int
-end
-
-param_space(m::MyModel) = (
-    Id(:μ),
-    Pos(:σ),
-    Simplex(:weights, m.n),
-)
-```
-"""
-function param_space end
+# Comportement racine par défaut
+transformation_schema(T::Type) = asℝ
 
 """
-    dimension(space)
-
-Return the dimension of the underlying unconstrained space, that is the dimension of the vector of unconstrained parameters. 
-
-`dimension(p)` is the number of scalar coordinates in the **unconstrained**
-representation. Equivalently, `constrain(p, θ)` expects
-`length(θ) == dimension(p)`.
-
-A structured constrained parameter does not change this rule. For example, a
-`3 × 3` correlation matrix has three free coordinates:
-
-```julia
-p = Correlation(:R, 3)
-dimension(p) == 3
-```
-"""
-function dimension end
-
-"""
-    names(space)
-
-Return the list of symbols corresponding to the names of the constrained parameters.
-
-`names(p)` returns the names of the **logical constrained parameters**. A vector
-or matrix parameter has one name, not one name per scalar entry.
-
-```julia
-p = (RealVec(:μ, 3), SPD(:Σ, 3))
-names(p)
-# (:μ, :Σ)
-```
-"""
-function names end
-
-"""
-    constrain(space, par)
-
-Return the constraint version of the parameter par according to the space.
-
-`example(p)` returns one canonical value in the constrained representation. It
-is defined from the origin of the unconstrained chart:
-
-```julia
-example(p) == constrain(p, zeros(dimension(p)))
-```
-
-It is intended as a convenient valid representative of the space, not as a
-statistical default or fitted value.
-
-`constrain(p, θ)` maps a flat unconstrained vector to its natural constrained
-representation.
-
-The output keeps the model-level Julia structure:
-
-```julia
-constrain(Pos(:σ), [0.0])
-# 1.0
-
-constrain(RealVec(:μ, 3), zeros(3))
-# [0.0, 0.0, 0.0]
-
-constrain(SPD(:Σ, 2), zeros(3))
-# [1.0 0.0; 0.0 1.0]
-```
-
-For a Cartesian product of spaces, the constrained result is a tuple of the
-logical parameter values:
-
-```julia
-p = (RealVec(:μ, 3), Pos(:σ), Correlation(:R, 3))
-η = constrain(p, zeros(dimension(p)))
-# (μ_vector, σ_scalar, R_matrix)
-```
-
-The constrained side is therefore not flattened merely for the convenience of
-an optimizer.
-"""
-function constrain end
-
-"""
-    unconstrain(space, par)
-
-Return the unconstraint version of the parameter par according to the space.
-
-`unconstrain(p, η)` performs the inverse transformation: it accepts the natural
-constrained value and returns the flat unconstrained vector.
-
-For interior points of a chart,
-
-```julia
-θ = randn(dimension(p))
-unconstrain(p, constrain(p, θ)) ≈ θ
-```
-
-Closed boundaries may naturally correspond to infinite unconstrained
-coordinates; this is part of the geometry of the chosen space.
-"""
-function unconstrain end
-
-"""
-    example(space)
-
-Return an example of a constraint parameter from the space. 
-"""
-function example(p)
-    return constrain(p, zeros(dimension(p)))
-end
-
-abstract type AbstractParameterSpace end
-abstract type AbstractScalarDomain end
-
-struct IdentityDomain <: AbstractScalarDomain end
-struct ExpDomain{AllowZero} <: AbstractScalarDomain end
-struct NegativeExpDomain <: AbstractScalarDomain end
-struct ProbabilityDomain{LeftClosed,RightClosed} <: AbstractScalarDomain end
-struct LowerDomain{AllowEqual,T} <: AbstractScalarDomain
-    lower::T
-end
-struct BoundedDomain{LeftClosed,RightClosed,L,U} <: AbstractScalarDomain
-    lower::L
-    upper::U
-end
-
-struct ScalarSpace{S,D<:AbstractScalarDomain} <: AbstractParameterSpace
-    domain::D
-end
-
-struct ElementwiseSpace{S,D<:AbstractScalarDomain,N} <: AbstractParameterSpace
-    domain::D
-    dims::NTuple{N,Int}
-end
-
-struct OrderedSpace{A,B,D<:AbstractScalarDomain} <: AbstractParameterSpace
-    first_domain::D
-end
-
-struct Between{A,B,C} <: AbstractParameterSpace end
-
-# Internal specialized space used by the Distributions.jl extension.
-struct NIG{M,A,B,D} <: AbstractParameterSpace end
-
-struct Simplex{S} <: AbstractParameterSpace
-    n::Int
-    anchor::Int
-
-    function Simplex{S}(n::Integer, anchor::Integer) where {S}
-        n >= 1 || throw(ArgumentError("simplex must contain at least one coordinate"))
-        1 <= anchor <= n || throw(ArgumentError("anchor must belong to 1:n"))
-        new{S}(Int(n), Int(anchor))
+    @constrained_struct struct MyStruct{T, N}
+        a::T::asℝ₊
+        b::Vector{T}::asSimplex(N)
     end
-end
 
-struct SPD{S} <: AbstractParameterSpace
-    n::Int
-
-    function SPD{S}(n::Integer) where {S}
-        n > 0 || throw(ArgumentError("matrix dimension must be positive"))
-        new{S}(Int(n))
+Macro universelle gérant les contraintes statiques et dynamiques (liées aux paramètres de type).
+"""
+macro constrained_struct(expr)
+    if expr.head != :struct
+        error("@constrained_struct doit être appliqué sur une structure (struct)")
     end
-end
-
-struct Prefixed{P,S} <: AbstractParameterSpace
-    space::S
-end
-
-
-struct Correlation{S} <: AbstractParameterSpace
-    n::Int
-
-    function Correlation{S}(n::Integer) where {S}
-        n > 0 || throw(ArgumentError("matrix dimension must be positive"))
-        new{S}(Int(n))
-    end
-end
-
-
-const ProductParameterSpace = Tuple{Vararg{AbstractParameterSpace}}
-
-# ---------------------------------------------------------------------------
-# Constructors
-# ---------------------------------------------------------------------------
-
-_scalar(s::Symbol, d::D) where {D<:AbstractScalarDomain} = ScalarSpace{s,D}(d)
-
-_elementwise(s::Symbol, d::D, dims::NTuple{N,Int}) where {D<:AbstractScalarDomain,N} =
-    ElementwiseSpace{s,D,N}(d, dims)
-
-_ordered(a::Symbol, b::Symbol, d::D) where {D<:AbstractScalarDomain} =
-    OrderedSpace{a,b,D}(d)
-
-function _bounded(s::Symbol, lower, upper, ::Val{LC}, ::Val{RC}) where {LC,RC}
-    lower < upper || throw(ArgumentError("lower bound must be smaller than upper bound"))
-    d = BoundedDomain{LC,RC,typeof(lower),typeof(upper)}(lower, upper)
-    return _scalar(s, d)
-end
-
-"""A scalar parameter named `name` with values in `ℝ`."""
-Id(name::Symbol) = _scalar(name, IdentityDomain())
-
-"""A strictly positive scalar parameter."""
-Pos(name::Symbol) = _scalar(name, ExpDomain{false}())
-
-"""A nonnegative scalar parameter; zero maps back to `-Inf`."""
-NonNeg(name::Symbol) = _scalar(name, ExpDomain{true}())
-
-"""A strictly negative scalar parameter."""
-Neg(name::Symbol) = _scalar(name, NegativeExpDomain())
-
-"""A probability parameter in `[0, 1]`."""
-Prob(name::Symbol) = _scalar(name, ProbabilityDomain{true,true}())
-
-"""A probability parameter in `(0, 1)`."""
-ProbOpen(name::Symbol) = _scalar(name, ProbabilityDomain{false,false}())
-
-"""A probability parameter in `(0, 1]`."""
-ProbOpenLeft(name::Symbol) = _scalar(name, ProbabilityDomain{false,true}())
-
-"""A probability parameter in `[0, 1)`."""
-ProbOpenRight(name::Symbol) = _scalar(name, ProbabilityDomain{true,false}())
-
-"""A scalar parameter strictly greater than `lower`."""
-Lower(name::Symbol, lower) = _scalar(name, LowerDomain{false,typeof(lower)}(lower))
-
-"""A scalar parameter greater than or equal to `lower`."""
-LowerClosed(name::Symbol, lower) = _scalar(name, LowerDomain{true,typeof(lower)}(lower))
-
-"""A scalar parameter in `[lower, upper]`."""
-Bounded(name::Symbol, lower, upper) = _bounded(name, lower, upper, Val(true), Val(true))
-
-"""A scalar parameter in `(lower, upper)`."""
-BoundedOpen(name::Symbol, lower, upper) = _bounded(name, lower, upper, Val(false), Val(false))
-
-"""A scalar parameter in `(lower, upper]`."""
-BoundedOpenLeft(name::Symbol, lower, upper) = _bounded(name, lower, upper, Val(false), Val(true))
-
-"""A scalar parameter in `[lower, upper)`."""
-BoundedOpenRight(name::Symbol, lower, upper) = _bounded(name, lower, upper, Val(true), Val(false))
-
-"""Two real scalar parameters satisfying `first < second`."""
-Ordered(first::Symbol, second::Symbol) = _ordered(first, second, IdentityDomain())
-
-"""Two positive scalar parameters satisfying `0 < first < second`."""
-PosOrdered(first::Symbol, second::Symbol) = _ordered(first, second, ExpDomain{false}())
-
-"""Three scalar parameters satisfying `lower ≤ value ≤ upper`."""
-Between(lower::Symbol, upper::Symbol, value::Symbol) = Between{lower,upper,value}()
-
-@inline _cross2(a, b) = a[1] * b[2] - a[2] * b[1]
-
-function _point2(p)
-    length(p) == 2 || throw(DimensionMismatch("quadrilateral corners must have two coordinates"))
-    return (p[1], p[2])
-end
-
-NIG(μ::Symbol, α::Symbol, β::Symbol, δ::Symbol) = NIG{μ,α,β,δ}()
-
-"""An `n`-component vector parameter with strictly positive entries."""
-function PosVec(name::Symbol, n::Integer)
-    n > 0 || throw(ArgumentError("dimension must be positive"))
-    return _elementwise(name, ExpDomain{false}(), (Int(n),))
-end
-
-"""An `n`-component vector parameter with nonnegative entries."""
-function NonNegVec(name::Symbol, n::Integer)
-    n > 0 || throw(ArgumentError("dimension must be positive"))
-    return _elementwise(name, ExpDomain{true}(), (Int(n),))
-end
-
-"""An `n`-component vector parameter with entries greater than or equal to `lower`."""
-function LowerClosedVec(name::Symbol, lower, n::Integer)
-    n > 0 || throw(ArgumentError("dimension must be positive"))
-    return _elementwise(name, LowerDomain{true,typeof(lower)}(lower), (Int(n),))
-end
-
-"""An `n`-component vector parameter with entries in `[0, 1]`."""
-function ProbVec(name::Symbol, n::Integer)
-    n > 0 || throw(ArgumentError("dimension must be positive"))
-    return _elementwise(name, ProbabilityDomain{true,true}(), (Int(n),))
-end
-
-"""An unconstrained real vector parameter with `n` entries."""
-function RealVec(name::Symbol, n::Integer)
-    n >= 0 || throw(ArgumentError("dimension must be nonnegative"))
-    return _elementwise(name, IdentityDomain(), (Int(n),))
-end
-
-"""An unconstrained real `m × n` matrix parameter."""
-function RealMat(name::Symbol, m::Integer, n::Integer)
-    m >= 0 || throw(ArgumentError("number of rows must be nonnegative"))
-    n >= 0 || throw(ArgumentError("number of columns must be nonnegative"))
-    return _elementwise(name, IdentityDomain(), (Int(m), Int(n)))
-end
-
-"""A probability vector of length `n` constrained to the simplex."""
-Simplex(name::Symbol, n::Integer; anchor::Integer=n) = Simplex{name}(n, anchor)
-
-function Simplex(name::Symbol, p::AbstractVector)
-    isempty(p) && throw(ArgumentError("probability vector must be nonempty"))
-    all(x -> x >= zero(x), p) || throw(DomainError(p, "probabilities must be nonnegative"))
-    total = sum(p)
-    isapprox(total, one(total)) || throw(DomainError(p, "probabilities must sum to one"))
-    anchor = argmax(p)
-    p[anchor] > zero(p[anchor]) || throw(DomainError(p, "at least one probability must be positive"))
-    return Simplex(name, length(p); anchor)
-end
-
-"""An `n × n` symmetric positive-definite matrix parameter."""
-SPD(name::Symbol, n::Integer) = SPD{name}(n)
-
-"""Prefix the logical parameter names of `space` without changing its values."""
-Prefixed(prefix::Symbol, space) = Prefixed{prefix,typeof(space)}(space)
-
-"""An `n × n` positive-definite correlation-matrix parameter."""
-Correlation(name::Symbol, n::Integer) = Correlation{name}(n)
-
-
-# ---------------------------------------------------------------------------
-# Metadata
-# ---------------------------------------------------------------------------
-
-names(::ScalarSpace{S}) where {S} = (S,)
-names(::ElementwiseSpace{S}) where {S} = (S,)
-names(::OrderedSpace{A,B}) where {A,B} = (A, B)
-names(::Between{A,B,C}) where {A,B,C} = (A, B, C)
-names(::NIG{M,A,B,D}) where {M,A,B,D} = (M, A, B, D)
-names(::Simplex{S}) where {S} = (S,)
-names(::SPD{S}) where {S} = (S,)
-names(p::ProductParameterSpace) = Tuple(s for q in p for s in names(q))
-names(p::Prefixed{P}) where {P} = Tuple(Symbol(P, "_", s) for s in names(p.space))
-names(::Correlation{S}) where {S} = (S,)
-
-
-dimension(::ScalarSpace) = 1
-dimension(::OrderedSpace) = 2
-dimension(::Between) = 3
-dimension(::NIG) = 4
-dimension(p::Simplex) = p.n - 1
-dimension(p::ElementwiseSpace) = prod(p.dims)
-dimension(p::SPD) = p.n * (p.n + 1) ÷ 2
-dimension(p::Prefixed) = dimension(p.space)
-dimension(p::ProductParameterSpace) = sum(dimension, p; init=0)
-dimension(p::Correlation) = p.n * (p.n - 1) ÷ 2
-
-_parameter_count(p) = length(names(p))
-
-# A single parameter may itself be a vector or matrix. Coupled spaces with
-# several logical parameters use a tuple, while product spaces flatten only the
-# logical parameter blocks, never their contents.
-function _parameter_values(p::AbstractParameterSpace, η)
-    n = _parameter_count(p)
-    n == 0 && return ()
-    n == 1 && return (η,)
-    η isa Tuple || throw(ArgumentError("expected $n constrained parameter values"))
-    length(η) == n || throw(DimensionMismatch("expected $n constrained parameter values"))
-    return η
-end
-
-_parameter_values(p::ProductParameterSpace, η::Tuple) = η
-_parameter_values(p::Prefixed, η) = _parameter_values(p.space, η)
-
-function _from_parameter_values(p::AbstractParameterSpace, values::Tuple)
-    n = _parameter_count(p)
-    length(values) == n || throw(DimensionMismatch("expected $n constrained parameter values"))
-    n == 0 && return ()
-    n == 1 && return values[1]
-    return values
-end
-
-_from_parameter_values(p::ProductParameterSpace, values::Tuple) = values
-_from_parameter_values(p::Prefixed, values::Tuple) = _from_parameter_values(p.space, values)
-
-# ---------------------------------------------------------------------------
-# Helpers
-# ---------------------------------------------------------------------------
-
-function _check_dimension(p, x)
-    length(x) == dimension(p) || throw(DimensionMismatch(
-        "expected $(dimension(p)) unconstrained parameters, got $(length(x))",
-    ))
-    return nothing
-end
-
-function _promoted_vector(x)
-    isempty(x) && return Float64[]
-    T = promote_type(map(typeof, x)...)
-    return T[xi for xi in x]
-end
-
-function _concatenate_vectors(vs)
-    total = sum(length, vs; init=0)
-    total == 0 && return Float64[]
-    Ts = [eltype(v) for v in vs if !isempty(v)]
-    T = isempty(Ts) ? Float64 : promote_type(Ts...)
-    result = Vector{T}(undef, total)
-    offset = 0
-    for v in vs, x in v
-        offset += 1
-        result[offset] = x
-    end
-    return result
-end
-
-function _check_tuple(η, n, message="constrained parameter")
-    η isa Tuple || throw(ArgumentError("$message must be a tuple of length $n"))
-    length(η) == n || throw(DimensionMismatch("expected $n constrained values"))
-    return nothing
-end
-
-# ---------------------------------------------------------------------------
-# Scalar transforms
-# ---------------------------------------------------------------------------
-
-_constrain_scalar(::IdentityDomain, θ) = θ
-_unconstrain_scalar(::IdentityDomain, η) = η
-
-_constrain_scalar(::ExpDomain, θ) = exp(θ)
-
-function _unconstrain_scalar(::ExpDomain{AllowZero}, η) where {AllowZero}
-    valid = AllowZero ? η >= zero(η) : η > zero(η)
-    valid || throw(DomainError(
-        η,
-        AllowZero ? "parameter must be nonnegative" : "parameter must be strictly positive",
-    ))
-    return log(η)
-end
-
-_constrain_scalar(::NegativeExpDomain, θ) = -exp(θ)
-
-function _unconstrain_scalar(::NegativeExpDomain, η)
-    η < zero(η) || throw(DomainError(η, "parameter must be strictly negative"))
-    return log(-η)
-end
-
-function _constrain_scalar(::ProbabilityDomain{LC,RC}, θ) where {LC,RC}
-    q = if θ >= zero(θ)
-        z = exp(-θ)
-        inv(one(θ) + z)
+    
+    # A `struct` expression is `(mutable?, signature, body)`.
+    struct_sig = expr.args[2]
+    
+    # Extraction propre du nom et des paramètres {T, N, ...}
+    if struct_sig isa Expr && struct_sig.head == :curly
+        struct_name = struct_sig.args[1]
+        type_params = struct_sig.args[2:end]
     else
-        z = exp(θ)
-        z / (one(θ) + z)
+        struct_name = struct_sig
+        type_params = []
     end
-    lo, hi = zero(q), one(q)
-    !LC && q <= lo && return nextfloat(lo)
-    !RC && q >= hi && return prevfloat(hi)
-    return q
-end
-
-function _unconstrain_scalar(::ProbabilityDomain{LC,RC}, η) where {LC,RC}
-    left_ok = LC ? η >= zero(η) : η > zero(η)
-    right_ok = RC ? η <= one(η) : η < one(η)
-    left_ok && right_ok || throw(DomainError(
-        η,
-        "parameter must belong to " *
-        (LC ? "[0, 1" : "(0, 1") *
-        (RC ? "]" : ")"),
-    ))
-    return log(η) - log1p(-η)
-end
-
-function _constrain_scalar(d::LowerDomain, θ)
-    η = d.lower + exp(θ)
-    if isfinite(θ) && η <= d.lower && d.lower isa AbstractFloat
-        return oftype(η, nextfloat(d.lower))
+    
+    body = expr.args[3].args
+    
+    clean_fields = []
+    schema_pairs = []
+    field_names = []
+    
+    for line in body
+        if line isa Expr && line.head == :(::)
+            
+            # CAS 1 : Double assertion -> b::Vector{T}::asSimplex(N)
+            if line.args[1] isa Expr && line.args[1].head == :(::)
+                inner_expr = line.args[1]
+                field_name = inner_expr.args[1]
+                field_type = inner_expr.args[2]
+                constraint = line.args[2]
+                
+                push!(field_names, field_name)
+                push!(clean_fields, :($field_name::$field_type))
+                push!(schema_pairs, :($field_name = $constraint))
+                
+            # CAS 2 : Une seule assertion -> x::MyStruct{T, N} (Imbrication automatique)
+            else
+                field_name = line.args[1]
+                field_type = line.args[2]
+                
+                push!(field_names, field_name)
+                push!(clean_fields, :($field_name::$field_type))
+                push!(schema_pairs, :($field_name = transformation_schema($field_type)))
+            end
+        end
     end
-    return η
+    
+    # Génération du code avec injection des paramètres de type dans la méthode du schéma
+    return esc(quote
+        struct $struct_sig
+            $(clean_fields...)
+            
+        end
+        
+        # Capture DYNAMIQUE des paramètres de type (ex: T, N) pour le schéma
+        function Paramorph.transformation_schema(::Type{<:$struct_name{$(type_params...)}}) where {$(type_params...)}
+            return as((
+                $(schema_pairs...)
+            ))
+        end
+        
+        # Déclencheur de reconstruction récursive
+        function Paramorph.reconstruct_struct(::Type{S}, nt::NamedTuple) where {$(type_params...), S<:$struct_name{$(type_params...)}}
+            args = map(fieldnames($struct_name)) do f
+                val = getproperty(nt, f)
+                ftype = fieldtype(S, f)
+                return Paramorph.reconstruct_field(ftype, val)
+            end
+            return S(args...)
+        end
+    end)
 end
 
-function _unconstrain_scalar(d::LowerDomain{AllowEqual}, η) where {AllowEqual}
-    valid = AllowEqual ? η >= d.lower : η > d.lower
-    valid || throw(DomainError(
-        η,
-        AllowEqual ?
-            "parameter must be greater than or equal to $(d.lower)" :
-            "parameter must be strictly greater than $(d.lower)",
-    ))
-    return log(η - d.lower)
+# --- Fonctions de support au Runtime ---
+
+function reconstruct_field(T::Type, val::NamedTuple)
+    return reconstruct_struct(T, val)
+end
+reconstruct_field(T::Type, val) = val
+reconstruct_struct(T::Type, val) = val
+
+# --- API Publique ---
+
+dimension_intrinsique(T::Type) = dimension(transformation_schema(T))
+
+function constraint(T::Type, x::Vector{<:Real})
+    schema = transformation_schema(T)
+    @assert length(x) == dimension(schema) "Taille incorrecte du vecteur."
+    nt = transform(schema, x)
+    return reconstruct_struct(T, nt)
 end
 
-function _constrain_scalar(d::BoundedDomain{LC,RC}, θ) where {LC,RC}
-    q = _constrain_scalar(ProbabilityDomain{LC,RC}(), θ)
-    η = d.lower + (d.upper - d.lower) * q
-    lo, hi = oftype(η, d.lower), oftype(η, d.upper)
-    if isfinite(θ)
-        η <= lo && d.lower isa AbstractFloat && return oftype(η, nextfloat(d.lower))
-        η >= hi && d.upper isa AbstractFloat && return oftype(η, prevfloat(d.upper))
-    end
-    !LC && η <= lo && return nextfloat(lo)
-    !RC && η >= hi && return prevfloat(hi)
-    return η
+function constraint_with_logjac(T::Type, x::Vector{<:Real})
+    schema = transformation_schema(T)
+    @assert length(x) == dimension(schema) "Taille incorrecte du vecteur."
+    nt, logjac = transform_and_logjac(schema, x)
+    return reconstruct_struct(T, nt), logjac
 end
 
-function _unconstrain_scalar(d::BoundedDomain{LC,RC}, η) where {LC,RC}
-    left_ok = LC ? η >= d.lower : η > d.lower
-    right_ok = RC ? η <= d.upper : η < d.upper
-    left_ok && right_ok || throw(DomainError(
-        η,
-        "parameter must belong to " *
-        (LC ? "[$(d.lower), $(d.upper)" : "($(d.lower), $(d.upper)") *
-        (RC ? "]" : ")"),
-    ))
-    q = (η - d.lower) / (d.upper - d.lower)
-    return _unconstrain_scalar(ProbabilityDomain{LC,RC}(), q)
+function unconstrain(obj)
+    nt = to_named_tuple(obj)
+    schema = transformation_schema(typeof(obj))
+    return inverse(schema, nt)
 end
 
-# ---------------------------------------------------------------------------
-# Scalar and elementwise spaces
-# ---------------------------------------------------------------------------
-
-function constrain(p::ScalarSpace, θ)
-    _check_dimension(p, θ)
-    return _constrain_scalar(p.domain, θ[1])
-end
-
-unconstrain(p::ScalarSpace, η::Number) = [_unconstrain_scalar(p.domain, η)]
-
-unconstrain(p::ScalarSpace, η::NTuple{1}) =
-    unconstrain(p, only(η))
-
-
-function constrain(p::ElementwiseSpace, θ)
-    _check_dimension(p, θ)
-    values = [_constrain_scalar(p.domain, x) for x in θ]
-    length(p.dims) == 1 && return values
-    return copy(reshape(values, p.dims))
-end
-
-function unconstrain(p::ElementwiseSpace, η::AbstractArray)
-    size(η) == p.dims || throw(DimensionMismatch(
-        "expected constrained parameter with size $(p.dims), got $(size(η))",
-    ))
-    return _promoted_vector([_unconstrain_scalar(p.domain, x) for x in vec(η)])
-end
-
-unconstrain(p::ElementwiseSpace, η::NTuple{1}) =
-    unconstrain(p, only(η))
-
-# ---------------------------------------------------------------------------
-# Product spaces
-# ---------------------------------------------------------------------------
-
-function constrain(p::ProductParameterSpace, θ)
-    _check_dimension(p, θ)
-    return _constrain_product(p, θ, 0)
-end
-
-function _constrain_product(p::Tuple, θ, offset)
-    isempty(p) && return ()
-    q = first(p)
-    n = dimension(q)
-    ηq = constrain(q, view(θ, (offset + 1):(offset + n)))
-    return (_parameter_values(q, ηq)..., _constrain_product(Base.tail(p), θ, offset + n)...)
-end
-
-function unconstrain(p::ProductParameterSpace, η::Tuple)
-    length(η) == _parameter_count(p) || throw(DimensionMismatch(
-        "expected $(_parameter_count(p)) constrained parameter values, got $(length(η))",
-    ))
-    values = Any[]
-    offset = 0
-    for q in p
-        n = _parameter_count(q)
-        qvalues = ntuple(i -> η[offset + i], n)
-        push!(values, unconstrain(q, _from_parameter_values(q, qvalues)))
-        offset += n
-    end
-    return _concatenate_vectors(values)
-end
-
-
-
-# ---------------------------------------------------------------------------
-# Coupled scalar spaces
-# ---------------------------------------------------------------------------
-
-function constrain(p::OrderedSpace, θ)
-    _check_dimension(p, θ)
-    a = _constrain_scalar(p.first_domain, θ[1])
-    return (a, a + exp(θ[2]))
-end
-
-function unconstrain(p::OrderedSpace, η)
-    _check_tuple(η, 2)
-    a, b = η
-    b > a || throw(DomainError(η, "parameters must satisfy first < second"))
-    return _promoted_vector((_unconstrain_scalar(p.first_domain, a), log(b - a)))
-end
-
-function constrain(p::Between, θ)
-    _check_dimension(p, θ)
-    a = θ[1]
-    width = exp(θ[2])
-    q = _constrain_scalar(ProbabilityDomain{true,true}(), θ[3])
-    return (a, a + width, a + width * q)
-end
-
-function unconstrain(p::Between, η)
-    _check_tuple(η, 3)
-    a, b, c = η
-    a <= c <= b || throw(DomainError(η, "parameters must satisfy lower <= value <= upper"))
-    if b == a
-        c == a || throw(DomainError(η, "degenerate bounds require lower == upper == value"))
-        return _promoted_vector((a, -Inf, 0.0))
-    end
-    width = b - a
-    q = (c - a) / width
-    z = _unconstrain_scalar(ProbabilityDomain{true,true}(), q)
-    return _promoted_vector((a, log(width), z))
-end
-
-function constrain(p::NIG, θ)
-    _check_dimension(p, θ)
-    μ = θ[1]
-    γ = exp(θ[2])
-    β = θ[3]
-    δ = exp(θ[4])
-    α = hypot(β, γ)
-    return (μ, α, β, δ)
-end
-
-function unconstrain(p::NIG, η)
-    _check_tuple(η, 4)
-    μ, α, β, δ = η
-    α > abs(β) || throw(DomainError(η, "parameters must satisfy α > |β|"))
-    δ > zero(δ) || throw(DomainError(η, "δ must be strictly positive"))
-    γ2 = (α - abs(β)) * (α + abs(β))
-    return _promoted_vector((μ, log(γ2) / 2, β, log(δ)))
-end
-
-# ---------------------------------------------------------------------------
-# Simplex
-# ---------------------------------------------------------------------------
-
-function constrain(p::Simplex, θ)
-    _check_dimension(p, θ)
-    p.n == 1 && return [1.0]
-
-    m = max(zero(θ[1]), maximum(θ))
-    anchor_weight = exp(-m)
-    free_weights = exp.(θ .- m)
-    denom = anchor_weight + sum(free_weights)
-
-    T = promote_type(typeof(anchor_weight), eltype(free_weights))
-    η = Vector{T}(undef, p.n)
-    j = 1
-    for i in 1:p.n
-        if i == p.anchor
-            η[i] = anchor_weight / denom
+function to_named_tuple(obj)
+    fields = fieldnames(typeof(obj))
+    pairs = map(fields) do f
+        val = getproperty(obj, f)
+        if !isprimitivetype(typeof(val)) && typeof(val) != String && !(val isa AbstractArray)
+            return f => to_named_tuple(val)
         else
-            η[i] = free_weights[j] / denom
-            j += 1
+            return f => val
         end
     end
-    return η
+    return NamedTuple(pairs)
 end
-
-function unconstrain(p::Simplex, η::AbstractVector)
-    length(η) == p.n || throw(DimensionMismatch("expected simplex of length $(p.n)"))
-    all(x -> x >= zero(x), η) || throw(DomainError(η, "probabilities must be nonnegative"))
-    total = sum(η)
-    isapprox(total, one(total)) || throw(DomainError(η, "probabilities must sum to one"))
-    anchor = η[p.anchor]
-    anchor > zero(anchor) || throw(DomainError(
-        η,
-        "the anchor probability must be strictly positive for this simplex chart",
-    ))
-    log_anchor = log(anchor)
-    return _promoted_vector([
-        log(η[i]) - log_anchor for i in 1:p.n if i != p.anchor
-    ])
-end
-
-unconstrain(p::Simplex, η::NTuple{1}) =
-    unconstrain(p, only(η))
-
-
-
-# ---------------------------------------------------------------------------
-# Symmetric positive-definite matrices
-# ---------------------------------------------------------------------------
-
-function _spd_pairs(n::Integer)
-    pairs = Tuple{Int,Int}[]
-    for i in 1:n, j in 1:i
-        push!(pairs, (i, j))
-    end
-    return pairs
-end
-
-function _spd_cholesky_from_theta(p::SPD, θ)
-    _check_dimension(p, θ)
-    T = isempty(θ) ? Float64 : promote_type(map(typeof, θ)...)
-    L = zeros(T, p.n, p.n)
-    for (q, (i, j)) in enumerate(_spd_pairs(p.n))
-        L[i, j] = i == j ? exp(θ[q]) : θ[q]
-    end
-    return L
-end
-
-function constrain(p::SPD, θ)
-    L = _spd_cholesky_from_theta(p, θ)
-    return L * transpose(L)
-end
-
-function _spd_cholesky_from_matrix(p::SPD, S)
-    size(S) == (p.n, p.n) || throw(DimensionMismatch("expected a $(p.n)×$(p.n) matrix"))
-    for i in 1:p.n, j in 1:(i - 1)
-        isapprox(S[i, j], S[j, i]) || throw(DomainError(S, "matrix must be symmetric"))
-    end
-
-    T = eltype(S)
-    L = zeros(T, p.n, p.n)
-    for i in 1:p.n, j in 1:i
-        s = S[i, j]
-        for k in 1:(j - 1)
-            s -= L[i, k] * L[j, k]
-        end
-        if i == j
-            s > zero(s) || throw(DomainError(S, "matrix must be positive definite"))
-            L[i, j] = sqrt(s)
-        else
-            L[i, j] = s / L[j, j]
-        end
-    end
-    return L
-end
-
-function unconstrain(p::SPD, S)
-    L = _spd_cholesky_from_matrix(p, S)
-    θ = Vector{eltype(L)}(undef, dimension(p))
-    for (q, (i, j)) in enumerate(_spd_pairs(p.n))
-        θ[q] = i == j ? log(L[i, j]) : L[i, j]
-    end
-    return θ
-end
-
-unconstrain(p::SPD, η::NTuple{1}) =
-    unconstrain(p, only(η))
-
-
-# Prefixes alter names only, never values or transformations.
-constrain(p::Prefixed, θ) = constrain(p.space, θ)
-unconstrain(p::Prefixed, η) = unconstrain(p.space, η)
-
-# Correlation matrices
-"""
-    correlation_factor(p::Correlation, θ)
-
-Return the lower-triangular factor generated by the correlation chart at
-unconstrained coordinates `θ`. It satisfies
-`constrain(p, θ) == correlation_factor(p, θ) * correlation_factor(p, θ)'`.
-
-This is useful when an algorithm naturally works with the factor itself and
-avoids reconstructing it numerically from the correlation matrix.
-"""
-function correlation_factor(p::Correlation, θ)
-    _check_dimension(p, θ)
-    T = isempty(θ) ? Float64 : promote_type(map(typeof, θ)...)
-    L = zeros(T, p.n, p.n)
-    q = 0
-
-    for i in 1:p.n
-        scale = i == 1 ? one(T) : one(L[i - 1, i - 1])
-        for j in 1:(i - 1)
-            q += 1
-            z = tanh(θ[q])
-            L[i, j] = scale * z
-            scale *= sqrt(one(z) - z * z)
-        end
-        L[i, i] = scale
-    end
-
-    return L
-end
-
-function constrain(p::Correlation, θ)
-    L = correlation_factor(p, θ)
-    return L * transpose(L)
-end
-
-function _check_correlation_matrix(p::Correlation, R)
-    size(R) == (p.n, p.n) || throw(DimensionMismatch("expected a $(p.n)×$(p.n) matrix"))
-    for i in 1:p.n
-        isapprox(R[i, i], one(R[i, i])) || throw(DomainError(R, "correlation matrix must have unit diagonal"))
-        for j in 1:(i - 1)
-            isapprox(R[i, j], R[j, i]) || throw(DomainError(R, "correlation matrix must be symmetric"))
-        end
-    end
-    return nothing
-end
-
-function unconstrain(p::Correlation, R)
-    _check_correlation_matrix(p, R)
-    L = _spd_cholesky_from_matrix(SPD{:correlation}(p.n), R)
-    θ = Vector{eltype(L)}(undef, dimension(p))
-    q = 0
-
-    for i in 2:p.n
-        scale = one(L[i, i])
-        for j in 1:(i - 1)
-            z = L[i, j] / scale
-            abs(z) < one(z) || throw(DomainError(R, "correlation matrix lies on the boundary of the chart"))
-            q += 1
-            θ[q] = atanh(z)
-            scale *= sqrt(one(z) - z * z)
-        end
-    end
-
-    return θ
-end
-
-
-unconstrain(p::Correlation, η::NTuple{1}) =
-    unconstrain(p, only(η))
-
-
-
-include("DependentSpaces.jl")
 
 end # module
