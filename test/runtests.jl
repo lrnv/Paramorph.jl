@@ -12,8 +12,8 @@ end
     # 1. Structure dynamique (N définit la taille du simplexe et de la matrice)
     @constrained_struct struct DynamicStruct{T, N}
         a::T::asℝ₊
-        b::Vector{T}::asSimplex(N)
-        C::Matrix{T}::asCorrelationCholesky(N)
+        b::Vector{T}::UnitSimplex(N)
+        C::UpperTriangular{T, Matrix{T}}::corr_cholesky_factor(N)
     end
 
     # 2. Structure qui imbrique la structure dynamique
@@ -41,7 +41,7 @@ end
     @test length(objet.sub.b) == N_size    # true (3)
     @test sum(objet.sub.b) ≈ 1.0           # true (Propriété du simplexe)
     @test size(objet.sub.C) == (3,3)                # (3, 3)
-    @test all(diag(objet.sub.C) .≈ 1.0)    # true (Propriété d'une matrice de corrélation)
+    @test diag(objet.sub.C' * objet.sub.C) ≈ ones(N_size)
     @test objet.d < 0                      # true
 
     # --- Aller-Retour ---
