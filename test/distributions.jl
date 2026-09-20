@@ -22,12 +22,17 @@ using Distributions
         coordinates = unconstrain(distribution)
         rebuilt = constraint(distribution, coordinates)
         @test unconstrain(rebuilt) ≈ coordinates
+        family = Base.typename(typeof(distribution)).wrapper
+        from_type = constraint(family, coordinates)
+        @test unconstrain(from_type) ≈ coordinates
     end
 
     normal = Normal(2.0, 3.0)
     @test intrinsic_dimension(normal) == 2
     @test all(isapprox.(params(constraint(normal, unconstrain(normal))), params(normal)))
     @test constraint(normal, zeros(2)) == Normal(0.0, 1.0)
+    @test constraint(Normal, zeros(2)) == Normal(0.0, 1.0)
+    @test intrinsic_dimension(Normal) == 2
 
     uniform = Uniform(-2.0, 4.0)
     @test constraint(uniform, unconstrain(uniform)) == uniform
@@ -46,6 +51,8 @@ using Distributions
     categorical = Categorical([0.2, 0.3, 0.5])
     @test probs(constraint(categorical, unconstrain(categorical))) ≈ probs(categorical)
     @test intrinsic_dimension(categorical) == 2
+    @test_throws ArgumentError constraint(Binomial, zeros(1))
+    @test_throws ArgumentError constraint(Categorical, zeros(2))
 
     @test ForwardDiff.gradient(zeros(2)) do x
         d = constraint(normal, x)

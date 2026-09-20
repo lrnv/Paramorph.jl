@@ -56,18 +56,32 @@ const _INDEPENDENT_FAMILIES = (
 
 for (family, names, transforms) in _INDEPENDENT_FAMILIES
     @eval begin
+        Paramorph._supports_type_reconstruction(::Type{<:$family}) = true
+        Paramorph.transformation_schema(::Type{<:$family}) =
+            _named_schema($names, $transforms)
+        Paramorph.transformation_schema(::Type{<:$family}, ::NamedTuple) =
+            _named_schema($names, $transforms)
         Paramorph.transformation_schema(::$family, ::NamedTuple) =
             _named_schema($names, $transforms)
         Paramorph.parameter_values(d::$family) =
             _named_values($names, Distributions.params(d))
+        Paramorph.reconstruct_struct(::Type{<:$family}, values::NamedTuple) =
+            $family(Tuple(values)...)
         Paramorph.reconstruct_struct(::$family, values::NamedTuple) =
             $family(Tuple(values)...)
     end
 end
 
+Paramorph._supports_type_reconstruction(::Type{<:Distributions.Dirac}) = true
+Paramorph.transformation_schema(::Type{<:Distributions.Dirac}) =
+    _named_schema((:x,), (TV.asℝ,))
+Paramorph.transformation_schema(::Type{<:Distributions.Dirac}, ::NamedTuple) =
+    _named_schema((:x,), (TV.asℝ,))
 Paramorph.transformation_schema(::Distributions.Dirac, ::NamedTuple) =
     _named_schema((:x,), (TV.asℝ,))
 Paramorph.parameter_values(d::Distributions.Dirac) = (; x=d.value)
+Paramorph.reconstruct_struct(::Type{<:Distributions.Dirac}, p::NamedTuple) =
+    Distributions.Dirac(p.x)
 Paramorph.reconstruct_struct(::Distributions.Dirac, p::NamedTuple) =
     Distributions.Dirac(p.x)
 
@@ -80,8 +94,12 @@ end
 
 for family in (Distributions.Uniform, Distributions.Arcsine)
     @eval begin
+        Paramorph._supports_type_reconstruction(::Type{<:$family}) = true
+        Paramorph.transformation_schema(::Type{<:$family}) = _ordered_schema()
+        Paramorph.transformation_schema(::Type{<:$family}, ::NamedTuple) = _ordered_schema()
         Paramorph.transformation_schema(::$family, ::NamedTuple) = _ordered_schema()
         Paramorph.parameter_values(d::$family) = _named_values((:a, :b), Distributions.params(d))
+        Paramorph.reconstruct_struct(::Type{<:$family}, p::NamedTuple) = $family(p.a, p.b)
         Paramorph.reconstruct_struct(::$family, p::NamedTuple) = $family(p.a, p.b)
     end
 end
@@ -93,10 +111,18 @@ function _triangular_schema()
     return Paramorph.joint_transform(base, forward, backward)
 end
 
+Paramorph._supports_type_reconstruction(::Type{<:Distributions.TriangularDist}) = true
+Paramorph.transformation_schema(::Type{<:Distributions.TriangularDist}) =
+    _triangular_schema()
+Paramorph.transformation_schema(
+    ::Type{<:Distributions.TriangularDist}, ::NamedTuple,
+) = _triangular_schema()
 Paramorph.transformation_schema(::Distributions.TriangularDist, ::NamedTuple) =
     _triangular_schema()
 Paramorph.parameter_values(d::Distributions.TriangularDist) =
     _named_values((:a, :b, :c), Distributions.params(d))
+Paramorph.reconstruct_struct(::Type{<:Distributions.TriangularDist}, p::NamedTuple) =
+    Distributions.TriangularDist(p.a, p.b, p.c)
 Paramorph.reconstruct_struct(::Distributions.TriangularDist, p::NamedTuple) =
     Distributions.TriangularDist(p.a, p.b, p.c)
 

@@ -53,6 +53,7 @@ auxiliary_fields(::Type) = ()
 auxiliary_defaults(::Type) = NamedTuple()
 numeric_type(::Type) = nothing
 rebind_numeric_type(T::Type, ::Type) = T
+_supports_type_reconstruction(T::Type) = is_paramorph_type(T) && T isa DataType
 
 const _PARAMORPH_TYPES = Set{Tuple{Module,Symbol}}()
 
@@ -540,7 +541,9 @@ intrinsic_dimension(T::Type) = TransformVariables.dimension(transformation_schem
 intrinsic_dimension(object) = TransformVariables.dimension(transformation_schema(object))
 
 function _check_coordinate_type(T::Type, x::Vector)
-    T isa DataType || throw(ArgumentError("a concrete @paramorph type is required"))
+    _supports_type_reconstruction(T) || throw(ArgumentError(
+        "$T cannot be reconstructed from its type alone; call constraint with a prototype object",
+    ))
 end
 
 function constraint(T::Type, x::Vector{<:Real})
