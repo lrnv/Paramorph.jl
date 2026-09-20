@@ -100,7 +100,7 @@
         @test TransformVariables.inverse(transform, parameters) ≈ x
         @test isfinite(logjac)
         model = constraint(AsymmetricMixedLike{Float64}, x)
-        @test (model.θ₁, model.θ₂) ≈ (θ₁, θ₂)
+        @test all(isapprox.((model.θ₁, model.θ₂), (θ₁, θ₂)))
         @test_throws DomainError AsymmetricMixedLike(1.0, 1.0)
     end
 
