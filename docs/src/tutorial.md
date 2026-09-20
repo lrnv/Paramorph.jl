@@ -108,6 +108,10 @@ Validation also performs a round trip through the transformation. This rejects
 an invalid simplex such as `[0.2, 0.3, 0.9]`, even when an isolated call to
 `inverse(UnitSimplex(3), ...)` does not check its final sum.
 
+Reconstruction by `constraint` is different: the transformation itself has
+already established the invariant, so Paramorph uses a private trusted inner
+constructor and does not perform the inverse/round-trip validation again.
+
 A value type parameter can record a dimension without changing the vector's
 storage type:
 
@@ -445,3 +449,51 @@ geometry during validating construction, before a prototype exists.
 
 These override hooks are intended for coupled geometries. Ordinary models
 should continue to declare transformations directly on their fields.
+
+## 9. Univariate distributions as prototypes
+
+Loading `Distributions.jl` activates Paramorph's optional extension for
+univariate distributions. A distribution object acts as a prototype:
+
+```julia
+using Distributions, Paramorph
+
+prototype = Normal(2.0, 3.0)
+x = unconstrain(prototype)
+candidate = constraint(prototype, x)
+```
+
+The extension declares the parameter geometry, extracts values through
+`Distributions.params`, and reconstructs a candidate with the distribution's
+public constructor. Paramorph does not replace or bypass constructors owned by
+`Distributions.jl`.
+
+Prototype-based reconstruction is essential when a distribution contains a
+structural parameter. For example, the number of trials in a `Binomial` is
+kept from the prototype while only its probability is placed in the optimizer
+coordinates:
+
+```julia
+prototype = Binomial(20, 0.4)
+dimension_intrinsique(prototype) == 1
+params(constraint(prototype, [0.0]))[1] == 20
+```
+
+The initial extension covers the standard scalar families used as copula
+margins, ordered-support families such as `Uniform`, the coupled parameters of
+`TriangularDist`, and prototype-dependent `Binomial` and `Categorical`
+parameters. Multivariate and matrix-variate distributions are intentionally
+outside its current scope.
+
+For a foreign type, the same adapter consists of three internal hooks:
+
+```julia
+Paramorph.transformation_schema(prototype, context)
+Paramorph.parameter_values(prototype)
+Paramorph.reconstruct_struct(prototype, constrained_values)
+```
+
+The first returns a TransformVariables transformation, the second returns the
+corresponding named constrained representation, and the third rebuilds the
+foreign object. Model packages should use an extension for these methods so
+that optional dependencies remain optional.

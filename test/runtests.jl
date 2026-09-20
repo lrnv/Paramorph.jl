@@ -6,6 +6,7 @@ using LinearAlgebra
 using ForwardDiff
 
 include("copulas_cases.jl")
+include("distributions.jl")
 
 @testset "Aqua" begin
     Aqua.test_all(Paramorph)
@@ -57,6 +58,17 @@ end
     @paramorph R struct ExplicitNumeric{D,R<:Real}
         values::as(Vector, D)
         label::String = "explicit"
+    end
+
+    @paramorph struct TrustedReconstruction
+        value::asℝ₊
+    end
+    validation_calls = Ref(0)
+    function Paramorph.schema_override(
+        ::Type{<:TrustedReconstruction}, ::NamedTuple, ::NamedTuple,
+    )
+        validation_calls[] += 1
+        return nothing
     end
 
     scalar = ScalarOnly(2.0)
@@ -130,6 +142,14 @@ end
         return sum(abs2, transformed.values)
     end
     @test gradient == zeros(2)
+
+    validation_calls[] = 0
+    TrustedReconstruction(1.0)
+    @test validation_calls[] == 1
+    @test_throws DomainError @inbounds TrustedReconstruction(-1.0)
+    @test validation_calls[] == 2
+    constraint(TrustedReconstruction{Float64}, [0.0])
+    @test validation_calls[] == 2
 
     mutable_definition = :(@paramorph mutable struct MutableParameters
         value::asℝ
