@@ -568,8 +568,6 @@ function constraint(T::Type, x::Vector{<:Real})
 end
 
 function constraint(prototype, x::Vector{<:Real})
-    T = typeof(prototype)
-    _check_coordinate_type(T, x)
     schema = transformation_schema(prototype)
     @assert length(x) == TransformVariables.dimension(schema) "Incorrect vector length."
     return reconstruct_struct(prototype, TransformVariables.transform(schema, x))
@@ -584,8 +582,6 @@ function constraint_with_logjac(T::Type, x::Vector{<:Real})
 end
 
 function constraint_with_logjac(prototype, x::Vector{<:Real})
-    T = typeof(prototype)
-    _check_coordinate_type(T, x)
     schema = transformation_schema(prototype)
     @assert length(x) == TransformVariables.dimension(schema) "Incorrect vector length."
     nt, logjac = TransformVariables.transform_and_logjac(schema, x)
