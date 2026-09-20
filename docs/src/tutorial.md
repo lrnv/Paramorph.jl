@@ -463,6 +463,17 @@ x = unconstrain(prototype)
 candidate = constraint(prototype, x)
 ```
 
+When every constructor argument is fitted and the schema does not depend on an
+instance, the distribution family can be used directly:
+
+```julia
+normal = constraint(Normal, zeros(intrinsic_dimension(Normal)))
+gamma = constraint(Gamma, zeros(intrinsic_dimension(Gamma)))
+```
+
+The coordinate element type determines the numeric parameter type, just as it
+does for an `@paramorph` structure.
+
 The extension declares the parameter geometry, extracts values through
 `Distributions.params`, and reconstructs a candidate with the distribution's
 public constructor. Paramorph does not replace or bypass constructors owned by
