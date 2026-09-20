@@ -7,8 +7,15 @@ authors = ["Oskar Laverny"]
 LinearAlgebra = "37e2e46d-f89d-539d-b4ee-838fcccc9c8e"
 TransformVariables = "84d833dd-6860-57f9-a1a7-6da5db126cff"
 
+[weakdeps]
+Distributions = "31c24e10-a181-5473-b8eb-7969acd0382f"
+
+[extensions]
+ParamorphDistributionsExt = "Distributions"
+
 [compat]
 Aqua = "0.8.18"
+Distributions = "0.25"
 ForwardDiff = "1"
 LinearAlgebra = "1"
 Test = "1"
@@ -17,8 +24,9 @@ julia = "1.10"
 
 [extras]
 Aqua = "4c88cf16-eb10-579e-8560-4a9242c79595"
+Distributions = "31c24e10-a181-5473-b8eb-7969acd0382f"
 ForwardDiff = "f6369f11-7733-5829-9624-2563aa707210"
 Test = "8dfed614-e22c-5e08-85e1-65c5234f0b40"
 
 [targets]
-test = ["Aqua", "ForwardDiff", "Test"]
+test = ["Aqua", "Distributions", "ForwardDiff", "Test"]
