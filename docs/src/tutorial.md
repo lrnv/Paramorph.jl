@@ -66,7 +66,7 @@ using Paramorph
 end
 
 P = MixtureParameters{3, Float64} # the macro generated MixtureParameters{N, T}
-dimension_intrinsique(P)
+intrinsic_dimension(P)
 ```
 
 The macro creates an ordinary Julia structure together with
@@ -75,7 +75,7 @@ with `P`. The value type parameter `N` can therefore determine the simplex
 length dynamically.
 
 ```@example tutorial
-x = zeros(dimension_intrinsique(P))
+x = zeros(intrinsic_dimension(P))
 p = constraint(P, x)
 
 typeof(p)
@@ -154,7 +154,7 @@ prototype = LabeledMixture{3}(
     120,
 )
 
-length(unconstrain(prototype)) == dimension_intrinsique(typeof(prototype))
+length(unconstrain(prototype)) == intrinsic_dimension(typeof(prototype))
 ```
 
 `parameters` is another Paramorph structure, so it remains part of the
@@ -224,7 +224,7 @@ A field without a second annotation is treated as a type that already has a
 end
 
 M = ModelParameters{3, Float64}
-x = zeros(dimension_intrinsique(M))
+x = zeros(intrinsic_dimension(M))
 m = constraint(M, x)
 
 (m.mixture.scale, m.mixture.weights, m.negative_offset)
@@ -248,7 +248,7 @@ using LinearAlgebra
 end
 
 C = CorrelationParameters{3, Float64}
-c = constraint(C, zeros(dimension_intrinsique(C)))
+c = constraint(C, zeros(intrinsic_dimension(C)))
 R = c.U' * c.U
 diag(R)
 ```
@@ -263,7 +263,7 @@ A density defined on constrained parameters must be corrected when evaluated
 in unconstrained coordinates:
 
 ```@example tutorial
-x = randn(dimension_intrinsique(M))
+x = randn(intrinsic_dimension(M))
 m, logjac = constraint_with_logjac(M, x)
 
 isfinite(logjac)
@@ -307,7 +307,7 @@ example `?UnitSimplex`, to read the documentation of each transformation.
 ## 7. Common errors
 
 - The vector passed to `constraint` must contain exactly
-  `dimension_intrinsique(T)` elements.
+  `intrinsic_dimension(T)` elements.
 - A transformation must produce a value compatible with its declared field
   type.
 - Without an explicit transformation, Paramorph calls
@@ -384,7 +384,7 @@ asymmetric Galambos geometries:
 end
 
 
-dimension_intrinsique(TawnLike{3,Float64})
+intrinsic_dimension(TawnLike{3,Float64})
 ```
 
 Use `recursive(ContainerType)` when a tuple, vector, or named tuple contains
@@ -475,7 +475,7 @@ coordinates:
 
 ```julia
 prototype = Binomial(20, 0.4)
-dimension_intrinsique(prototype) == 1
+intrinsic_dimension(prototype) == 1
 params(constraint(prototype, [0.0]))[1] == 20
 ```
 

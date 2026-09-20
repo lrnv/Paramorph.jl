@@ -25,27 +25,27 @@ using Distributions
     end
 
     normal = Normal(2.0, 3.0)
-    @test dimension_intrinsique(normal) == 2
+    @test intrinsic_dimension(normal) == 2
     @test all(isapprox.(params(constraint(normal, unconstrain(normal))), params(normal)))
     @test constraint(normal, zeros(2)) == Normal(0.0, 1.0)
 
     uniform = Uniform(-2.0, 4.0)
     @test constraint(uniform, unconstrain(uniform)) == uniform
-    @test dimension_intrinsique(uniform) == 2
+    @test intrinsic_dimension(uniform) == 2
 
     triangular = TriangularDist(-2.0, 4.0, 1.0)
     @test constraint(triangular, unconstrain(triangular)) == triangular
-    @test dimension_intrinsique(triangular) == 3
+    @test intrinsic_dimension(triangular) == 3
 
     binomial = Binomial(12, 0.3)
     rebuilt_binomial = constraint(binomial, unconstrain(binomial))
     @test all(isapprox.(params(rebuilt_binomial), params(binomial)))
     @test params(rebuilt_binomial)[1] == 12
-    @test dimension_intrinsique(binomial) == 1
+    @test intrinsic_dimension(binomial) == 1
 
     categorical = Categorical([0.2, 0.3, 0.5])
     @test probs(constraint(categorical, unconstrain(categorical))) ≈ probs(categorical)
-    @test dimension_intrinsique(categorical) == 2
+    @test intrinsic_dimension(categorical) == 2
 
     @test ForwardDiff.gradient(zeros(2)) do x
         d = constraint(normal, x)
