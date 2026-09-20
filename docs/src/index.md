@@ -18,6 +18,8 @@ closed_lower
 nonnegative
 bounded_interval
 correlation_matrix
+positive_definite_matrix
+variogram_matrix
 repeat_transform
 joint_transform
 polytope
