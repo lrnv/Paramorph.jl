@@ -371,6 +371,58 @@ g.correlation
 It consumes `D * (D - 1) / 2` coordinates and validates symmetry, positive
 definiteness, and a unit diagonal during inversion.
 
+### Positive-definite matrices and variograms
+
+`positive_definite_matrix(D)` stores a general symmetric positive-definite
+matrix. Its `D * (D + 1) / 2` coordinates parameterize a lower Cholesky factor
+with an exponentiated diagonal:
+
+```@example tutorial
+S = TransformVariables.transform(positive_definite_matrix(3), zeros(6))
+isposdef(S)
+```
+
+`variogram_matrix(D)` uses an SPD Gram matrix of size `D - 1` to produce a
+strict Hüsler--Reiss variogram: a symmetric, zero-diagonal, conditionally
+negative-definite matrix. It has `D * (D - 1) / 2` coordinates:
+
+```@example tutorial
+Γ = TransformVariables.transform(variogram_matrix(4), zeros(6))
+diag(Γ)
+```
+
+Both transformations store ordinary `Matrix{T}` values and support inversion,
+automatic differentiation, and log-Jacobian calculation.
+
+### Positive vectors with a bounded sum
+
+`positive_vector_with_sum_below(limit, D)` represents `D` positive values
+whose sum is strictly below `limit`. Internally, an additional simplex entry
+stores the unused slack:
+
+```@example tutorial
+α = TransformVariables.transform(
+    positive_vector_with_sum_below(5.0, 3), zeros(3),
+)
+sum(α) < 5
+```
+
+The limit is an ordinary value and may therefore be computed from a parent
+context when defining a conditional schema.
+
+### Asymmetric Mixed parameters
+
+`asymmetric_mixed()` is the smooth two-dimensional chart used by the
+asymmetric Mixed extreme-value family. It returns a named tuple `(θ₁, θ₂)`
+satisfying
+
+```math
+θ₁ ≥ 0,\qquad θ₁+θ₂ ≤ 1,\qquad θ₁+2θ₂ ≤ 1,\qquad θ₁+3θ₂ ≥ 0.
+```
+
+Unlike the generic radial `polytope` transformation, this family-specific map
+is smooth throughout the interior of its admissible quadrilateral.
+
 ### Repeated and recursive structures
 
 `repeat_transform(t, n)` applies `t` repeatedly and stores the results in a

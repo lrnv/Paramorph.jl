@@ -35,6 +35,75 @@
         @test isfinite(derivative)
     end
 
+    @paramorph struct CovarianceLike{D}
+        covariance::positive_definite_matrix(D)
+    end
+
+    @paramorph struct HuslerReissLike{D}
+        variogram::variogram_matrix(D)
+    end
+
+    @testset "positive-definite and variogram matrices" begin
+        spd = positive_definite_matrix(3)
+        x = [0.1, -0.2, 0.3, 0.4, -0.1, 0.2]
+        S, spd_logjac = TransformVariables.transform_and_logjac(spd, x)
+        @test S ≈ transpose(S)
+        @test isposdef(S)
+        @test TransformVariables.inverse(spd, S) ≈ x
+        @test isfinite(spd_logjac)
+        @test constraint(CovarianceLike{3,Float64}, x).covariance ≈ S
+
+        variogram = variogram_matrix(4)
+        Γ, variogram_logjac = TransformVariables.transform_and_logjac(variogram, x)
+        @test Γ ≈ transpose(Γ)
+        @test diag(Γ) == zeros(4)
+        @test all(>(0), Γ[i, j] for i in 1:4 for j in (i + 1):4)
+        @test TransformVariables.inverse(variogram, Γ) ≈ x
+        @test isfinite(variogram_logjac)
+        @test constraint(HuslerReissLike{4,Float64}, x).variogram ≈ Γ
+        @test_throws DomainError TransformVariables.inverse(variogram, Matrix{Float64}(I, 4, 4))
+    end
+
+    @paramorph T struct SumBoundedLike{D,T<:Real}
+        values::positive_vector_with_sum_below(T(5), D)
+    end
+
+    @testset "positive vector with bounded sum" begin
+        transform = positive_vector_with_sum_below(5.0, 3)
+        x = [0.2, -0.3, 0.4]
+        values, logjac = TransformVariables.transform_and_logjac(transform, x)
+        @test all(>(0), values)
+        @test sum(values) < 5
+        @test TransformVariables.inverse(transform, values) ≈ x
+        @test isfinite(logjac)
+        @test constraint(SumBoundedLike{3,Float64}, x).values ≈ values
+        @test_throws DomainError SumBoundedLike{3}([2.0, 2.0, 2.0])
+    end
+
+    @paramorph T struct AsymmetricMixedLike{T<:Real}
+        θ₁::T
+        θ₂::T
+    end
+    Paramorph.parameter_fields_override(::Type{<:AsymmetricMixedLike}) = (:θ₁, :θ₂)
+    Paramorph.schema_override(::Type{<:AsymmetricMixedLike}, ::NamedTuple) =
+        asymmetric_mixed()
+
+    @testset "asymmetric Mixed quadrilateral" begin
+        transform = asymmetric_mixed()
+        x = [0.2, -0.4]
+        parameters, logjac = TransformVariables.transform_and_logjac(transform, x)
+        (; θ₁, θ₂) = parameters
+        @test θ₁ >= 0
+        @test θ₁ + θ₂ <= 1
+        @test θ₁ + 2θ₂ <= 1
+        @test θ₁ + 3θ₂ >= 0
+        @test TransformVariables.inverse(transform, parameters) ≈ x
+        @test isfinite(logjac)
+        model = constraint(AsymmetricMixedLike{Float64}, x)
+        @test (model.θ₁, model.θ₂) ≈ (θ₁, θ₂)
+        @test_throws DomainError AsymmetricMixedLike(1.0, 1.0)
+    end
+
     @paramorph struct ContextChild
         value::closed_lower(get(context, :lower, -1.0))
     end
