@@ -4,9 +4,13 @@ CurrentModule = Paramorph
 
 # Paramorph
 
-Paramorph construit des objets Julia dont les champs vivent dans des espaces
-contraints, tout en laissant les algorithmes numériques travailler dans un
-vecteur euclidien non contraint. Commencez par le [tutoriel](tutorial.md).
+Paramorph builds Julia objects whose fields live in constrained spaces while
+numerical algorithms operate on unconstrained Euclidean vectors. Start with
+the [tutorial](tutorial.md).
 
 ```@index
+```
+
+```@docs
+@paramorph
 ```
