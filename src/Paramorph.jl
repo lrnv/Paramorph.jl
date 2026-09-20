@@ -11,7 +11,7 @@ transformation_schema(T::Type) = asℝ
 """
     @constrained_struct struct MyStruct{T, N}
         a::T::asℝ₊
-        b::Vector{T}::asSimplex(N)
+        b::Vector{T}::UnitSimplex(N)
     end
 
 Macro universelle gérant les contraintes statiques et dynamiques (liées aux paramètres de type).
@@ -64,6 +64,8 @@ macro constrained_struct(expr)
             end
         end
     end
+
+    schema_namedtuple = Expr(:tuple, schema_pairs...)
     
     # Génération du code avec injection des paramètres de type dans la méthode du schéma
     return esc(quote
@@ -73,31 +75,32 @@ macro constrained_struct(expr)
         end
         
         # Capture DYNAMIQUE des paramètres de type (ex: T, N) pour le schéma
-        function Paramorph.transformation_schema(::Type{<:$struct_name{$(type_params...)}}) where {$(type_params...)}
-            return as((
-                $(schema_pairs...)
-            ))
+        function Paramorph.transformation_schema(::Type{S}) where {$(type_params...), S<:$struct_name{$(type_params...)}}
+            return as($schema_namedtuple)
         end
-        
-        # Déclencheur de reconstruction récursive
+
         function Paramorph.reconstruct_struct(::Type{S}, nt::NamedTuple) where {$(type_params...), S<:$struct_name{$(type_params...)}}
-            args = map(fieldnames($struct_name)) do f
-                val = getproperty(nt, f)
-                ftype = fieldtype(S, f)
-                return Paramorph.reconstruct_field(ftype, val)
+            args = map(fieldnames(S)) do field
+                Paramorph.reconstruct_field(fieldtype(S, field), getproperty(nt, field))
             end
             return S(args...)
         end
     end)
 end
 
-# --- Fonctions de support au Runtime ---
+reconstruct_field(T::Type, value::NamedTuple) = reconstruct_struct(T, value)
+reconstruct_field(::Type, value) = value
+reconstruct_struct(::Type, value) = value
 
-function reconstruct_field(T::Type, val::NamedTuple)
-    return reconstruct_struct(T, val)
+function to_named_tuple(obj)
+    names = fieldnames(typeof(obj))
+    values = map(names) do field
+        value = getproperty(obj, field)
+        value isa AbstractArray || isprimitivetype(typeof(value)) || value isa String ?
+            value : to_named_tuple(value)
+    end
+    return NamedTuple{names}(values)
 end
-reconstruct_field(T::Type, val) = val
-reconstruct_struct(T::Type, val) = val
 
 # --- API Publique ---
 
@@ -106,8 +109,7 @@ dimension_intrinsique(T::Type) = dimension(transformation_schema(T))
 function constraint(T::Type, x::Vector{<:Real})
     schema = transformation_schema(T)
     @assert length(x) == dimension(schema) "Taille incorrecte du vecteur."
-    nt = transform(schema, x)
-    return reconstruct_struct(T, nt)
+    return reconstruct_struct(T, transform(schema, x))
 end
 
 function constraint_with_logjac(T::Type, x::Vector{<:Real})
@@ -118,22 +120,8 @@ function constraint_with_logjac(T::Type, x::Vector{<:Real})
 end
 
 function unconstrain(obj)
-    nt = to_named_tuple(obj)
     schema = transformation_schema(typeof(obj))
-    return inverse(schema, nt)
-end
-
-function to_named_tuple(obj)
-    fields = fieldnames(typeof(obj))
-    pairs = map(fields) do f
-        val = getproperty(obj, f)
-        if !isprimitivetype(typeof(val)) && typeof(val) != String && !(val isa AbstractArray)
-            return f => to_named_tuple(val)
-        else
-            return f => val
-        end
-    end
-    return NamedTuple(pairs)
+    return inverse(schema, to_named_tuple(obj))
 end
 
 end # module
