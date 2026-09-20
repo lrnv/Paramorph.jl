@@ -212,3 +212,71 @@ function unconstrain(p::DependentProduct, η::Tuple)
     end
     return _concatenate_vectors(pieces)
 end
+
+
+# ---------------------------------------------------------------------------
+# Hot-path specializations
+# ---------------------------------------------------------------------------
+# These more-specific methods preserve the public transformations above while
+# avoiding avoidable temporary objects in optimizer/AD loops.  The generic
+# implementations in Paramorph.jl remain the fallback for unusual containers.
+
+@inline function _constrain_product_piece(
+    q::ScalarSpace,
+    θ::AbstractVector,
+    offset::Int,
+)
+    @inbounds z = θ[offset + 1]
+    return _constrain_scalar(q.domain, z)
+end
+
+@inline function _constrain_product_piece(
+    q::AbstractParameterSpace,
+    θ::AbstractVector,
+    offset::Int,
+)
+    n = dimension(q)
+    return constrain(q, @view θ[(offset + 1):(offset + n)])
+end
+
+@inline _constrain_product_vector(::Tuple{}, ::AbstractVector, ::Int) = ()
+
+@inline function _constrain_product_vector(
+    p::Tuple,
+    θ::AbstractVector,
+    offset::Int,
+)
+    q = first(p)
+    ηq = _constrain_product_piece(q, θ, offset)
+    return (
+        _parameter_values(q, ηq)...,
+        _constrain_product_vector(Base.tail(p), θ, offset + dimension(q))...,
+    )
+end
+
+function constrain(p::ProductParameterSpace, θ::AbstractVector)
+    _check_dimension(p, θ)
+    return _constrain_product_vector(p, θ, 0)
+end
+
+@inline function correlation_factor(
+    p::Correlation,
+    θ::AbstractVector{T},
+) where {T<:Number}
+    _check_dimension(p, θ)
+    L = zeros(T, p.n, p.n)
+    q = 0
+
+    @inbounds for i in 1:p.n
+        scale = one(T)
+        for j in 1:(i - 1)
+            q += 1
+            z = tanh(θ[q])
+            L[i, j] = scale * z
+            scale *= sqrt(one(z) - z * z)
+        end
+        L[i, i] = scale
+    end
+
+    return L
+end
