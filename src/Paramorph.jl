@@ -4,7 +4,7 @@ import TransformVariables
 using LinearAlgebra
 
 export @paramorph, transformed_type, transformation_schema, constraint, unconstrain,
-    dimension_intrinsique, constraint_with_logjac, closed_lower, nonnegative,
+    intrinsic_dimension, constraint_with_logjac, closed_lower, nonnegative,
     bounded_interval, correlation_matrix, repeat_transform, joint_transform, polytope
 
 include("transforms.jl")
@@ -536,8 +536,8 @@ reconstruct_field(::Any, value) = value
 
 # Public API
 
-dimension_intrinsique(T::Type) = TransformVariables.dimension(transformation_schema(T))
-dimension_intrinsique(object) = TransformVariables.dimension(transformation_schema(object))
+intrinsic_dimension(T::Type) = TransformVariables.dimension(transformation_schema(T))
+intrinsic_dimension(object) = TransformVariables.dimension(transformation_schema(object))
 
 function _check_coordinate_type(T::Type, x::Vector)
     T isa DataType || throw(ArgumentError("a concrete @paramorph type is required"))

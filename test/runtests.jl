@@ -89,7 +89,7 @@ end
     @test bounded isa BoundedParameter{String, Float64}
 
     prototype = ParametersWithContext{2}([1.0, 2.0], "kept", 4.0)
-    @test dimension_intrinsique(typeof(prototype)) == 2
+    @test intrinsic_dimension(typeof(prototype)) == 2
     @test unconstrain(prototype) ≈ [1.0, 2.0]
     updated = constraint(prototype, [3.0, 5.0])
     @test updated.values == [3.0, 5.0]
@@ -199,7 +199,7 @@ end
     TargetType = ParentStruct{N_size, Float64}
 
     # a (1) + simplex(3) (2) + correlation factor (3) + d (1) = 7.
-    p = dimension_intrinsique(TargetType)
+    p = intrinsic_dimension(TargetType)
     @test p==7
 
     # Generate an unconstrained vector in R^7.

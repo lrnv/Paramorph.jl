@@ -92,7 +92,7 @@
         for Family in (TawnLike, AsymGalambosLike)
             T = Family{3,Float64}
             expected = (2^3 - 3 - 1) + 3 * (2^(3 - 1) - 1)
-            @test dimension_intrinsique(T) == expected
+            @test intrinsic_dimension(T) == expected
             object = constraint(T, zeros(expected))
             @test length(object.dep) == 4
             @test length(object.weights) == 3
@@ -182,7 +182,7 @@
 
     @testset "prototype-dependent active simplex" begin
         prototype = ActiveSimplexLike([0.2, 0.0, 0.8], "kept")
-        @test dimension_intrinsique(prototype) == 1
+        @test intrinsic_dimension(prototype) == 1
         x = unconstrain(prototype)
         rebuilt = constraint(prototype, x .+ 0.2)
         @test rebuilt.weights[2] == 0
