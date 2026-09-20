@@ -13,4 +13,5 @@ the [tutorial](tutorial.md).
 
 ```@docs
 @paramorph
+transformed_type
 ```
