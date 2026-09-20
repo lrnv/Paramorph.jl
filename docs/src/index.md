@@ -14,4 +14,11 @@ the [tutorial](tutorial.md).
 ```@docs
 @paramorph
 transformed_type
+closed_lower
+nonnegative
+bounded_interval
+correlation_matrix
+repeat_transform
+joint_transform
+polytope
 ```

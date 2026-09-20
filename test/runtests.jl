@@ -3,6 +3,9 @@ using Paramorph
 using Test
 using TransformVariables
 using LinearAlgebra
+using ForwardDiff
+
+include("copulas_cases.jl")
 
 @testset "Aqua" begin
     Aqua.test_all(Paramorph)
@@ -49,6 +52,11 @@ end
         parameters::ParametersWithDefaults{D, T}
         scale::asℝ₊
         identifier::Int = 42
+    end
+
+    @paramorph R struct ExplicitNumeric{D,R<:Real}
+        values::as(Vector, D)
+        label::String = "explicit"
     end
 
     scalar = ScalarOnly(2.0)
@@ -108,8 +116,20 @@ end
     @test nested_defaulted.identifier == 42
     @test nested_defaulted.scale == 1.0
 
-    @test_throws ArgumentError constraint(ScalarOnly{Float32}, zeros(Float64, 1))
+    @test constraint(ScalarOnly{Float32}, zeros(Float64, 1)) isa ScalarOnly{Float64}
     @test_throws AssertionError constraint(ScalarOnly{Float64}, zeros(Float64, 2))
+
+    explicit = ExplicitNumeric{2}([1.0, 2.0], "kept")
+    @test explicit isa ExplicitNumeric{2,Float64}
+    @test constraint(ExplicitNumeric{2,Float32}, zeros(Float64, 2)) isa
+        ExplicitNumeric{2,Float64}
+    gradient = ForwardDiff.gradient(zeros(2)) do x
+        transformed = constraint(explicit, x)
+        @test transformed isa ExplicitNumeric{2,<:ForwardDiff.Dual}
+        @test transformed.label == "kept"
+        return sum(abs2, transformed.values)
+    end
+    @test gradient == zeros(2)
 
     mutable_definition = :(@paramorph mutable struct MutableParameters
         value::asℝ

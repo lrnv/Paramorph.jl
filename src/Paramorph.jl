@@ -3,14 +3,49 @@ module Paramorph
 import TransformVariables
 using LinearAlgebra
 
-export @paramorph, transformed_type, transformation_schema, constraint, unconstrain, dimension_intrinsique, constraint_with_logjac
+export @paramorph, transformed_type, transformation_schema, constraint, unconstrain,
+    dimension_intrinsique, constraint_with_logjac, closed_lower, nonnegative,
+    bounded_interval, correlation_matrix, repeat_transform, joint_transform, polytope
+
+include("transforms.jl")
 
 # Default transformation for unconstrained scalar fields.
 transformation_schema(T::Type) = TransformVariables.asℝ
+transformation_schema(T::Type, context::NamedTuple) = transformation_schema(T)
+transformation_schema(obj, context::NamedTuple) = transformation_schema(typeof(obj), context)
+schema_context(::Type, ::Val) = NamedTuple()
+schema_context(parent, field::Val) = schema_context(typeof(parent), field)
+schema_override(::Type, ::NamedTuple) = nothing
+schema_override(object, context::NamedTuple) = schema_override(typeof(object), context)
+schema_override(T::Type, context::NamedTuple, values::NamedTuple) = schema_override(T, context)
+parameter_fields_override(::Type) = nothing
+
+recursive_schema(T::Type, context=NamedTuple()) = transformation_schema(T, context)
+recursive_schema(value, context=NamedTuple()) = transformation_schema(value, context)
+recursive_schema(::Type{V}, count::Integer, context=NamedTuple()) where {E,V<:AbstractVector{E}} =
+    repeat_transform(recursive_schema(E, context), count)
+recursive_schema(values::AbstractVector, context=NamedTuple()) = begin
+    isempty(values) && throw(ArgumentError("a recursive vector needs a declared length when empty"))
+    repeat_transform(recursive_schema(first(values), context), length(values))
+end
+recursive_schema(::Type{T}, context=NamedTuple()) where {T<:Tuple} =
+    TransformVariables.as(Tuple(map(type -> recursive_schema(type, context), T.parameters)))
+recursive_schema(values::Tuple, context=NamedTuple()) =
+    TransformVariables.as(map(value -> recursive_schema(value, context), values))
+function recursive_schema(::Type{N}, context=NamedTuple()) where {Names,Types,N<:NamedTuple{Names,Types}}
+    schemas = Tuple(map(type -> recursive_schema(type, context), Types.parameters))
+    return TransformVariables.as(NamedTuple{Names}(schemas))
+end
+function recursive_schema(values::NamedTuple, context=NamedTuple())
+    schemas = map(value -> recursive_schema(value, context), values)
+    return TransformVariables.as(schemas)
+end
 is_paramorph_type(::Type) = false
 parameter_fields(::Type) = ()
 auxiliary_fields(::Type) = ()
 auxiliary_defaults(::Type) = NamedTuple()
+numeric_type(::Type) = nothing
+rebind_numeric_type(T::Type, ::Type) = T
 
 const _PARAMORPH_TYPES = Set{Tuple{Module,Symbol}}()
 
@@ -44,6 +79,9 @@ transformed_type(::TransformVariables.UnitSimplex, ::Type{T}) where {T} = Vector
 transformed_type(::TransformVariables.UnitVectorNorm, ::Type{T}) where {T} = Tuple{Vector{T},T}
 transformed_type(::TransformVariables.CorrCholeskyFactor, ::Type{T}) where {T} =
     UpperTriangular{T,Matrix{T}}
+transformed_type(::CorrelationMatrix, ::Type{T}) where {T} = Matrix{T}
+transformed_type(t::RepeatedTransform, ::Type{T}) where {T} =
+    Vector{transformed_type(t.inner, T)}
 transformed_type(t::TransformVariables.Constant, ::Type) = typeof(t.value)
 transformed_type(::TransformVariables.TypeWrapperTransform{S}, ::Type) where {S} = S
 
@@ -75,6 +113,8 @@ function _is_transform_expr(expr)
     return name in _SCALAR_TRANSFORM_NAMES || name in (
         :as, :UnitVector, :unit_vector_norm, :UnitSimplex,
         :CorrCholeskyFactor, :corr_cholesky_factor, :Constant, :CustomTransform,
+        :closed_lower, :nonnegative, :bounded_interval, :correlation_matrix,
+        :repeat_transform, :joint_transform, :polytope,
     )
 end
 
@@ -85,6 +125,16 @@ function _storage_type_expr(expr, numeric_type)
     name == :unit_vector_norm && return :(Tuple{Vector{$numeric_type}, $numeric_type})
     name in (:CorrCholeskyFactor, :corr_cholesky_factor) &&
         return :(Paramorph.LinearAlgebra.UpperTriangular{$numeric_type, Matrix{$numeric_type}})
+    name == :correlation_matrix && return :(Matrix{$numeric_type})
+    name in (:closed_lower, :nonnegative, :bounded_interval) && return numeric_type
+    name == :joint_transform && error(
+        "@paramorph cannot infer a joint transformation's output type; use a schema override",
+    )
+    name == :polytope && return :(Vector{$numeric_type})
+    if name == :repeat_transform
+        element_type = _storage_type_expr(expr.args[2], numeric_type)
+        return :(Vector{$element_type})
+    end
     name == :Constant && return :(typeof($(expr.args[2])))
     name == :CustomTransform && error(
         "@paramorph cannot infer the output type of CustomTransform; wrap it in a named custom rule",
@@ -106,6 +156,11 @@ function _storage_type_expr(expr, numeric_type)
     error("@paramorph has no output-type rule for transformation `$expr`")
 end
 
+function _recursive_storage_type(expr)
+    length(expr.args) >= 2 || error("recursive requires a container type")
+    return expr.args[2]
+end
+
 """
     @paramorph struct MyStruct{N}
         a::asℝ₊
@@ -114,7 +169,18 @@ end
 
 Define a structure whose fields are validated and transformed by TransformVariables.jl.
 """
-macro paramorph(expr)
+macro paramorph(args...)
+    if length(args) == 1
+        expr = only(args)
+        numeric_parameter = :T
+        append_numeric_parameter = true
+    elseif length(args) == 2
+        numeric_parameter, expr = args
+        numeric_parameter isa Symbol || error("the explicit numeric parameter must be a symbol")
+        append_numeric_parameter = false
+    else
+        error("use `@paramorph struct ... end` or `@paramorph T struct ... end`")
+    end
     if expr.head != :struct
         error("@paramorph must be applied to a struct definition")
     end
@@ -141,8 +207,15 @@ macro paramorph(expr)
         parameter isa Expr && parameter.head in (:<:, :>:) && return parameter.args[1]
         error("Unsupported type parameter: $parameter")
     end
-    :T in user_type_args && error("T is reserved by @paramorph and must not be declared explicitly")
-    type_params = [user_type_params..., :(T<:Real)]
+    if append_numeric_parameter
+        :T in user_type_args && error("T is reserved by @paramorph and must not be declared explicitly")
+        type_params = [user_type_params..., :(T<:Real)]
+    else
+        numeric_parameter in user_type_args || error(
+            "explicit numeric parameter $numeric_parameter is not declared by the struct",
+        )
+        type_params = user_type_params
+    end
     type_args = map(type_params) do parameter
         parameter isa Symbol && return parameter
         parameter isa Expr && parameter.head in (:<:, :>:) && return parameter.args[1]
@@ -156,6 +229,7 @@ macro paramorph(expr)
     
     clean_fields = []
     schema_pairs = []
+    object_schema_pairs = []
     field_names = []
     parameter_field_names = []
     auxiliary_field_names = []
@@ -172,19 +246,43 @@ macro paramorph(expr)
             annotation = declaration_line.args[2]
             field_name isa Symbol || error("@paramorph fields must use the form `name::transformation`")
 
-            if _is_transform_expr(annotation)
+            if _transform_head(annotation) == :recursive
+                has_default && error("recursive field $field_name cannot have a default value")
+                field_type = _recursive_storage_type(annotation)
+                context_expr = :(Paramorph.schema_context(S, Val{$(QuoteNode(field_name))}()))
+                type_schema = length(annotation.args) == 2 ?
+                    :(Paramorph.recursive_schema($field_type, $context_expr)) :
+                    :(Paramorph.recursive_schema($field_type, $(annotation.args[3]), $context_expr))
+                object_schema = :(Paramorph.recursive_schema(
+                    getfield(object, $(QuoteNode(field_name))),
+                    Paramorph.schema_context(object, Val{$(QuoteNode(field_name))}()),
+                ))
+                push!(field_names, field_name)
+                push!(parameter_field_names, field_name)
+                push!(clean_fields, :($field_name::$field_type))
+                push!(schema_pairs, :($field_name = $type_schema))
+                push!(object_schema_pairs, :($field_name = $object_schema))
+            elseif _is_transform_expr(annotation)
                 has_default && error("transformed field $field_name cannot have a default value")
-                field_type = _storage_type_expr(annotation, :T)
+                field_type = _storage_type_expr(annotation, numeric_parameter)
                 push!(field_names, field_name)
                 push!(parameter_field_names, field_name)
                 push!(clean_fields, :($field_name::$field_type))
                 push!(schema_pairs, :($field_name = $annotation))
+                push!(object_schema_pairs, :($field_name = $annotation))
             elseif _is_paramorph_annotation(annotation, __module__)
                 has_default && error("nested Paramorph field $field_name cannot have a default value")
                 push!(field_names, field_name)
                 push!(parameter_field_names, field_name)
                 push!(clean_fields, :($field_name::$annotation))
-                push!(schema_pairs, :($field_name = transformation_schema($annotation)))
+                push!(schema_pairs, :($field_name = transformation_schema(
+                    $annotation,
+                    Paramorph.schema_context(S, Val{$(QuoteNode(field_name))}()),
+                )))
+                push!(object_schema_pairs, :($field_name = transformation_schema(
+                    getfield(object, $(QuoteNode(field_name))),
+                    Paramorph.schema_context(object, Val{$(QuoteNode(field_name))}()),
+                )))
             else
                 push!(field_names, field_name)
                 push!(auxiliary_field_names, field_name)
@@ -197,6 +295,7 @@ macro paramorph(expr)
     end
 
     schema_namedtuple = Expr(:tuple, schema_pairs...)
+    object_schema_namedtuple = Expr(:tuple, object_schema_pairs...)
     defaults_namedtuple = Expr(:tuple, auxiliary_default_pairs...)
     values_namedtuple = Expr(:tuple, [:( $name = $name ) for name in field_names]...)
     constructor = if isempty(type_params)
@@ -216,16 +315,18 @@ macro paramorph(expr)
             end
         end
     end
-    inferred_constructor = if isempty(user_type_params)
+    inferred_type_params = [p for (p, a) in zip(type_params, type_args) if a != numeric_parameter]
+    inferred_type_args = [a for a in type_args if a != numeric_parameter]
+    inferred_constructor = if isempty(inferred_type_params)
         quote
-            function $struct_name($(clean_fields...)) where {T}
-                return $struct_name{T}($(field_names...))
+            function $struct_name($(clean_fields...)) where {$numeric_parameter}
+                return $struct_name{$numeric_parameter}($(field_names...))
             end
         end
     else
         quote
-            function $struct_name{$(user_type_args...)}($(clean_fields...)) where {$(user_type_params...), T}
-                return $struct_name{$(user_type_args...), T}($(field_names...))
+            function $struct_name{$(inferred_type_args...)}($(clean_fields...)) where {$(inferred_type_params...), $numeric_parameter}
+                return $struct_name{$(type_args...)}($(field_names...))
             end
         end
     end
@@ -241,12 +342,40 @@ macro paramorph(expr)
         
         # Capture value type parameters such as N in transformation expressions.
         function Paramorph.transformation_schema(::Type{S}) where {$(type_params...), S<:$struct_name{$(type_args...)}}
-            return Paramorph.TransformVariables.as($schema_namedtuple)
+            return Paramorph.transformation_schema(S, NamedTuple())
+        end
+        function Paramorph.transformation_schema(
+            ::Type{S}, context::NamedTuple,
+        ) where {$(type_params...), S<:$struct_name{$(type_args...)}}
+            override = Paramorph.schema_override(S, context)
+            return isnothing(override) ?
+                Paramorph.TransformVariables.as($schema_namedtuple) : override
+        end
+        function Paramorph.transformation_schema(object::S) where {
+            $(type_params...), S<:$struct_name{$(type_args...)}
+        }
+            return Paramorph.transformation_schema(object, NamedTuple())
+        end
+        function Paramorph.transformation_schema(
+            object::S, context::NamedTuple,
+        ) where {$(type_params...), S<:$struct_name{$(type_args...)}}
+            override = Paramorph.schema_override(object, context)
+            return isnothing(override) ?
+                Paramorph.TransformVariables.as($object_schema_namedtuple) : override
         end
 
         Paramorph.is_paramorph_type(::Type{<:$struct_name}) = true
-        Paramorph.parameter_fields(::Type{<:$struct_name}) = $(Tuple(parameter_field_names))
+        function Paramorph.parameter_fields(::Type{S}) where {S<:$struct_name}
+            override = Paramorph.parameter_fields_override(S)
+            return isnothing(override) ? $(Tuple(parameter_field_names)) : override
+        end
         Paramorph.auxiliary_fields(::Type{<:$struct_name}) = $(Tuple(auxiliary_field_names))
+        Paramorph.numeric_type(::Type{<:$struct_name{$(type_args...)}}) where {$(type_params...)} = $numeric_parameter
+        function Paramorph.rebind_numeric_type(
+            ::Type{<:$struct_name{$(type_args...)}}, ::Type{ParamorphNumeric}
+        ) where {$(type_params...), ParamorphNumeric<:Real}
+            return $struct_name{$([a == numeric_parameter ? :ParamorphNumeric : a for a in type_args]...)}
+        end
         function Paramorph.auxiliary_defaults(::Type{S}) where {$(type_params...), S<:$struct_name{$(type_args...)}}
             return $defaults_namedtuple
         end
@@ -283,7 +412,8 @@ _same_constrained(a::Number, b::Number) = isapprox(a, b)
 _same_constrained(a, b) = isequal(a, b)
 
 function validate_constrained(T::Type, values::NamedTuple)
-    schema = transformation_schema(T)
+    override = schema_override(T, NamedTuple(), values)
+    schema = isnothing(override) ? transformation_schema(T) : override
     plain_values = to_parameter_named_tuple(T, values)
     coordinates = try
         TransformVariables.inverse(schema, plain_values)
@@ -300,6 +430,14 @@ function validate_constrained(T::Type, values::NamedTuple)
 end
 
 reconstruct_field(T::Type, value::NamedTuple) = reconstruct_struct(T, value)
+reconstruct_field(::Type{V}, values::AbstractVector) where {E,V<:AbstractVector{E}} =
+    [reconstruct_field(E, value) for value in values]
+reconstruct_field(::Type{T}, values::Tuple) where {T<:Tuple} =
+    map(reconstruct_field, T.parameters, values)
+function reconstruct_field(::Type{N}, values::NamedTuple) where {Names,Types,N<:NamedTuple{Names,Types}}
+    converted = map(reconstruct_field, Types.parameters, Tuple(values))
+    return NamedTuple{Names}(converted)
+end
 reconstruct_field(::Type, value) = value
 reconstruct_struct(::Type, value::NamedTuple) = value
 reconstruct_struct(::Type, value) = value
@@ -308,7 +446,7 @@ function to_parameter_named_tuple(T::Type, values::NamedTuple)
     names = parameter_fields(T)
     converted = map(names) do field
         value = getproperty(values, field)
-        is_paramorph_type(typeof(value)) ? to_parameter_named_tuple(value) : value
+        to_parameter_value(value)
     end
     return NamedTuple{names}(converted)
 end
@@ -318,14 +456,23 @@ function to_parameter_named_tuple(obj)
     names = parameter_fields(T)
     values = map(names) do field
         value = getproperty(obj, field)
-        is_paramorph_type(typeof(value)) ? to_parameter_named_tuple(value) : value
+        to_parameter_value(value)
     end
     return NamedTuple{names}(values)
 end
 
+
+to_parameter_value(value) = is_paramorph_type(typeof(value)) ?
+    to_parameter_named_tuple(value) : value
+to_parameter_value(values::AbstractVector) = map(to_parameter_value, values)
+to_parameter_value(values::Tuple) = map(to_parameter_value, values)
+to_parameter_value(values::NamedTuple) = map(to_parameter_value, values)
+
 function reconstruct_struct(prototype, nt::NamedTuple)
-    T = typeof(prototype)
-    is_paramorph_type(T) || return nt
+    old_type = typeof(prototype)
+    is_paramorph_type(old_type) || return nt
+    coordinate_type = _numeric_type_from_values(nt, numeric_type(old_type))
+    T = rebind_numeric_type(old_type, coordinate_type)
     args = map(fieldnames(T)) do field
         old = getproperty(prototype, field)
         hasproperty(nt, field) ? reconstruct_field(old, getproperty(nt, field)) : old
@@ -333,32 +480,62 @@ function reconstruct_struct(prototype, nt::NamedTuple)
     return T(args...)
 end
 
+function _numeric_type_from_values(value, fallback)
+    types = Type[]
+    _collect_numeric_types!(types, value)
+    return isempty(types) ? fallback : foldl(promote_type, types)
+end
+_collect_numeric_types!(types, value::Number) = (push!(types, typeof(value)); types)
+function _collect_numeric_types!(types, value::NamedTuple)
+    foreach(v -> _collect_numeric_types!(types, v), values(value))
+    return types
+end
+function _collect_numeric_types!(types, value::AbstractArray)
+    if isconcretetype(eltype(value)) && eltype(value) <: Real
+        push!(types, eltype(value))
+    else
+        foreach(v -> _collect_numeric_types!(types, v), value)
+    end
+    return types
+end
+function _collect_numeric_types!(types, value::Tuple)
+    foreach(v -> _collect_numeric_types!(types, v), value)
+    return types
+end
+_collect_numeric_types!(types, value) = types
+
 reconstruct_field(prototype, value::NamedTuple) = reconstruct_struct(prototype, value)
+reconstruct_field(prototype::AbstractVector, values::AbstractVector) =
+    [reconstruct_field(old, value) for (old, value) in zip(prototype, values)]
+reconstruct_field(prototype::Tuple, values::Tuple) =
+    map(reconstruct_field, prototype, values)
+function reconstruct_field(prototype::NamedTuple, values::NamedTuple)
+    converted = map(reconstruct_field, prototype, values)
+    return NamedTuple{keys(prototype)}(Tuple(converted))
+end
 reconstruct_field(::Any, value) = value
 
 # Public API
 
 dimension_intrinsique(T::Type) = TransformVariables.dimension(transformation_schema(T))
+dimension_intrinsique(object) = TransformVariables.dimension(transformation_schema(object))
 
 function _check_coordinate_type(T::Type, x::Vector)
     T isa DataType || throw(ArgumentError("a concrete @paramorph type is required"))
-    expected = T.parameters[end]
-    eltype(x) == expected || throw(ArgumentError(
-        "coordinate element type $(eltype(x)) does not match $T, which expects $expected",
-    ))
 end
 
 function constraint(T::Type, x::Vector{<:Real})
     _check_coordinate_type(T, x)
     schema = transformation_schema(T)
     @assert length(x) == TransformVariables.dimension(schema) "Incorrect vector length."
-    return reconstruct_struct(T, TransformVariables.transform(schema, x))
+    target = rebind_numeric_type(T, eltype(x))
+    return reconstruct_struct(target, TransformVariables.transform(schema, x))
 end
 
 function constraint(prototype, x::Vector{<:Real})
     T = typeof(prototype)
     _check_coordinate_type(T, x)
-    schema = transformation_schema(T)
+    schema = transformation_schema(prototype)
     @assert length(x) == TransformVariables.dimension(schema) "Incorrect vector length."
     return reconstruct_struct(prototype, TransformVariables.transform(schema, x))
 end
@@ -368,20 +545,20 @@ function constraint_with_logjac(T::Type, x::Vector{<:Real})
     schema = transformation_schema(T)
     @assert length(x) == TransformVariables.dimension(schema) "Incorrect vector length."
     nt, logjac = TransformVariables.transform_and_logjac(schema, x)
-    return reconstruct_struct(T, nt), logjac
+    return reconstruct_struct(rebind_numeric_type(T, eltype(x)), nt), logjac
 end
 
 function constraint_with_logjac(prototype, x::Vector{<:Real})
     T = typeof(prototype)
     _check_coordinate_type(T, x)
-    schema = transformation_schema(T)
+    schema = transformation_schema(prototype)
     @assert length(x) == TransformVariables.dimension(schema) "Incorrect vector length."
     nt, logjac = TransformVariables.transform_and_logjac(schema, x)
     return reconstruct_struct(prototype, nt), logjac
 end
 
 function unconstrain(obj)
-    schema = transformation_schema(typeof(obj))
+    schema = transformation_schema(obj)
     return TransformVariables.inverse(schema, to_parameter_named_tuple(obj))
 end
 
