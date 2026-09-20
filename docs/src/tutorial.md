@@ -312,3 +312,136 @@ example `?UnitSimplex`, to read the documentation of each transformation.
   reconstruction requires defaults for all of them; otherwise use a prototype.
 - `asSimplex` and `asCorrelationCholesky` are not TransformVariables 0.8
   constructors. Use `UnitSimplex` and `corr_cholesky_factor` instead.
+
+## 8. Advanced schemas for model packages
+
+The default form appends a numeric parameter named `T`. Existing model types
+can instead designate one of their declared parameters explicitly:
+
+```@example tutorial
+@paramorph R struct ExistingConvention{D,R<:Real}
+    values::as(Vector, D)
+    label::String = "default"
+end
+
+ExistingConvention{2}([1.0, 2.0], "example")
+```
+
+`constraint` adopts the element type of its coordinate vector. In particular,
+reconstruction from a `Float64` prototype remains compatible with automatic
+differentiation: parameter fields may become `ForwardDiff.Dual`, while
+auxiliary fields keep their prototype values.
+
+### Closed domains
+
+TransformVariables maps finite coordinates to the interior of a domain.
+Paramorph additionally provides transformations whose inverse accepts selected
+boundary points:
+
+```@example tutorial
+lower = closed_lower(1.0)
+TransformVariables.inverse(lower, 1.0)
+
+interval = bounded_interval(-1.0, 1.0)
+TransformVariables.inverse(interval, -1.0)
+```
+
+Boundaries correspond to infinite coordinates. Consequently, optimizer starts
+should normally remain in the interior even when direct construction accepts a
+closed endpoint.
+
+### Correlation matrices
+
+`correlation_matrix(D)` wraps TransformVariables' Cholesky-factor chart but
+stores the resulting correlation matrix:
+
+```@example tutorial
+@paramorph struct GaussianLike{D}
+    correlation::correlation_matrix(D)
+end
+
+g = constraint(GaussianLike{3,Float64}, zeros(3))
+g.correlation
+```
+
+It consumes `D * (D - 1) / 2` coordinates and validates symmetry, positive
+definiteness, and a unit diagonal during inversion.
+
+### Repeated and recursive structures
+
+`repeat_transform(t, n)` applies `t` repeatedly and stores the results in a
+vector. This expresses products of simplexes such as the canonical Tawn and
+asymmetric Galambos geometries:
+
+```@example tutorial
+@paramorph T struct TawnLike{D,T<:Real}
+    dependence::as(Vector, closed_lower(one(T)), 2^D-D-1)
+    weights::repeat_transform(UnitSimplex(2^(D-1)), D)
+end
+
+
+dimension_intrinsique(TawnLike{3,Float64})
+```
+
+Use `recursive(ContainerType)` when a tuple, vector, or named tuple contains
+Paramorph objects. A vector additionally needs its length for reconstruction
+from a type alone:
+
+```@example tutorial
+@paramorph struct PositiveComponent
+    strength::asℝ₊
+end
+
+@paramorph T struct ComponentVector{N,T<:Real}
+    children::recursive(Vector{PositiveComponent{T}}, N)
+end
+
+constraint(ComponentVector{2,Float64}, zeros(2))
+```
+
+When reconstruction starts from a prototype, the runtime container shape and
+all auxiliary values are preserved recursively.
+
+### Parent-dependent schemas
+
+A nested schema can receive context from its parent. Transformation expressions
+may read the local `context` named tuple, and a parent supplies it by extending
+`Paramorph.schema_context`:
+
+```julia
+@paramorph struct DimensionDependent
+    value::closed_lower(get(context, :lower, -1.0))
+end
+
+Paramorph.schema_context(::Type{<:Parent{D}}, ::Val{:child}) where {D} =
+    (; lower=-inv(D - 1))
+```
+
+This is useful when a child constraint depends on a parent dimension without
+adding that dimension to the child's stored type.
+
+### Joint constraints and polytopes
+
+Independent field transformations are insufficient for constraints such as
+`lower < upper` or parent-child inequalities. `joint_transform` constructs a
+bidirectional transformation from a base chart and user-supplied forward and
+backward maps. A model package can install the resulting whole-object schema by
+extending `Paramorph.schema_override` and identifying its parameter fields with
+`Paramorph.parameter_fields_override`.
+
+`polytope(A, b; center)` is the corresponding escape hatch for a bounded
+polytope `A * y <= b`. It uses radial projection from a strictly interior
+point. The mapping is bijective on the interior and supports inversion and
+automatic Jacobian calculation, but is only piecewise smooth where the active
+facet changes. Model packages should therefore benchmark it against a native
+constrained optimizer for difficult likelihoods.
+
+An override may dispatch on the prototype object rather than only its type.
+This supports active-face parameterizations: for example, a Liebscher weight
+that is structurally zero can remain excluded while the positive entries form
+a smaller simplex. The three-argument
+`Paramorph.schema_override(Type, context, values)` hook supplies the same
+geometry during validating construction, before a prototype exists.
+
+These override hooks are intended for coupled geometries. Ordinary models
+should continue to declare transformations directly on their fields.
