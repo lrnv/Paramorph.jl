@@ -596,7 +596,13 @@ macro paramorph(numeric_parameter, expr)
     # convenient partially-parameterized constructor and infer the numeric type
     # from the typed field arguments.
     inferred_constructor = nothing
-    if numeric_index == length(type_args)
+    # Runtime auxiliary fields usually carry domain-level construction semantics
+    # (dimensions, topology, labels, etc.).  Generating an unparameterized outer
+    # constructor for those structs can conflict with intentional package
+    # constructors whose signatures interpret the auxiliary arguments.  Keep
+    # Paramorph responsible only for the fully-parameterized validating
+    # constructor in that case.
+    if numeric_index == length(type_args) && isempty(auxiliary_names)
         prefix_args = type_args[1:end-1]
         prefix_params = type_params[1:end-1]
         target = isempty(prefix_args) ? struct_name : :($struct_name{$(prefix_args...)})

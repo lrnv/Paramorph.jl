@@ -63,7 +63,7 @@ end
 
 @testset "Paramorph" begin
     @testset "storage and geometry are separate" begin
-        x = PositiveScalarParameter(2.0, "custom")
+        x = PositiveScalarParameter{Float64}(2.0, "custom")
         @test Paramorph.parameter_fields(typeof(x)) == (:scale,)
         @test Paramorph.auxiliary_fields(typeof(x)) == (:label,)
         @test intrinsic_dimension(x) == 1
@@ -82,7 +82,7 @@ end
     end
 
     @testset "runtime-sized simplex geometry" begin
-        x = RuntimeSizedSimplex(3, [0.2, 0.3, 0.5])
+        x = RuntimeSizedSimplex{Float64}(3, [0.2, 0.3, 0.5])
         @test intrinsic_dimension(x) == 2
         @test_throws ArgumentError intrinsic_dimension(RuntimeSizedSimplex{Float64})
         @test_throws ArgumentError constraint(RuntimeSizedSimplex{Float64}, zeros(2))
@@ -104,7 +104,7 @@ end
     end
 
     @testset "opaque runtime vector geometry" begin
-        x = OpaqueVectorGeometry(3, [0.2, -0.4, 0.8])
+        x = OpaqueVectorGeometry{Float64}(3, [0.2, -0.4, 0.8])
         @test intrinsic_dimension(x) == 3
         @test_throws ArgumentError intrinsic_dimension(OpaqueVectorGeometry{Float64})
         @test intrinsic_dimension(
@@ -137,7 +137,7 @@ end
     end
 
     @testset "runtime composite geometry" begin
-        x = RuntimeCompositeGeometry(
+        x = RuntimeCompositeGeometry{Float64}(
             2,
             [1.5],
             [[0.4, 0.6], [0.7, 0.3]],
