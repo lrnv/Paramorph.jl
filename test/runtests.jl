@@ -65,9 +65,6 @@ end
     x::T ~ open_lower(zero(T))
 end
 
-@paramorph T struct StrictPositiveParameter{T<:Real}
-    x::T ~ open_lower(zero(T))
-end
 
 @testset "Paramorph" begin
     @testset "storage and geometry are separate" begin
@@ -187,8 +184,6 @@ end
         @test UnitIntervalParameter(1.0).p == 1.0
         @test_throws DomainError UnitIntervalParameter(-0.1)
         @test_throws DomainError UnitIntervalParameter(1.1)
-        @test StrictPositiveParameter(1.0).x == 1.0
-        @test_throws DomainError StrictPositiveParameter(0.0)
         @test StrictPositiveParameter(1.0).x == 1.0
         @test_throws DomainError StrictPositiveParameter(0.0)
     end
