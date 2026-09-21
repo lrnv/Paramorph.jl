@@ -48,6 +48,7 @@ does the same for recursive containers.
 ```@docs
 Paramorph.var"@paramorph"
 closed_lower
+open_lower
 nonnegative
 bounded_interval
 correlation_matrix

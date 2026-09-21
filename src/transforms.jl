@@ -8,6 +8,24 @@ closed_lower(lower) = ClosedLower(lower)
 """`nonnegative()` creates a transform to the closed nonnegative half-line."""
 nonnegative() = ClosedLower(0)
 
+# Open lower bounds share the same forward map but reject the boundary in the
+# inverse.  This distinction matters for constructor validation even though the
+# optimizer chart only reaches the interior at finite coordinates.
+struct OpenLower{L} <: TransformVariables.ScalarTransform
+    lower::L
+end
+
+"""`open_lower(lower)` creates a strictly lower-bounded transform `(lower, ∞)`."""
+open_lower(lower) = OpenLower(lower)
+TransformVariables.transform(t::OpenLower, x::Number) = t.lower + exp(x)
+TransformVariables.transform_and_logjac(t::OpenLower, x::Number) =
+    (TransformVariables.transform(t, x), x)
+function TransformVariables.inverse(t::OpenLower, y::Number)
+    y > t.lower || throw(DomainError(y, "value must be greater than $(t.lower)"))
+    return log(y - t.lower)
+end
+TransformVariables.inverse_eltype(::OpenLower, ::Type{T}) where {T<:Number} = float(T)
+
 TransformVariables.transform(t::ClosedLower, x::Number) = t.lower + exp(x)
 TransformVariables.transform_and_logjac(t::ClosedLower, x::Number) =
     (TransformVariables.transform(t, x), x)
