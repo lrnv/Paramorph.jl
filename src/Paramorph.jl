@@ -102,10 +102,26 @@ function _recursive_constraint(spec::RecursiveSpec, ::Type{T}, constrained, prot
     ]
 end
 
-_recursive_parameter_value(::NestedSpec, value, context) =
-    parameter_values(value; context)
+_recursive_parameter_value(spec::NestedSpec, value, context) =
+    parameter_values(value; context=spec.context)
 _recursive_parameter_value(spec::RecursiveSpec, value, context) =
     Tuple(parameter_values(child; context=spec.context) for child in value)
+
+# Ordinary transforms store their constrained value directly. Nested/recursive
+# specifications instead expose the child's logical parameter value and rebuild
+# the child object during reconstruction.
+_parameter_value(::Any, value, context) = value
+_parameter_value(spec::Union{NestedSpec,RecursiveSpec}, value, context) =
+    _recursive_parameter_value(spec, value, context)
+
+_reconstruct_parameter(::Any, ::Type, constrained, prototype, have_prototype::Bool) =
+    constrained
+function _reconstruct_parameter(
+    spec::Union{NestedSpec,RecursiveSpec}, ::Type{T}, constrained,
+    prototype, have_prototype::Bool,
+) where {T}
+    return _recursive_constraint(spec, T, constrained, prototype, have_prototype)
+end
 
 # -----------------------------------------------------------------------------
 # Public geometry protocol
@@ -563,7 +579,7 @@ macro paramorph(numeric_parameter, expr)
             ::Paramorph.TrustedConstruction,
             $(clean_fields...),
         ) where {$(type_params...)}
-            return new{$(type_args...)}($(r.name for r in field_records...))
+            return new{$(type_args...)}($(map(r -> r.name, field_records)...))
         end
     end
     struct_body = Expr(:block, clean_fields..., trusted_constructor.args...)
@@ -588,7 +604,7 @@ macro paramorph(numeric_parameter, expr)
                 )
                 return $struct_name{$(type_args...)}(
                     Paramorph._trusted_construction,
-                    $(r.name for r in field_records...),
+                    $(map(r -> r.name, field_records)...),
                 )
             end
         end
@@ -669,7 +685,7 @@ macro paramorph(numeric_parameter, expr)
             Paramorph._validate_constrained($struct_name{$(type_args...)}, values)
             return $struct_name{$(type_args...)}(
                 Paramorph._trusted_construction,
-                $(r.name for r in field_records...),
+                $(map(r -> r.name, field_records)...),
             )
         end
 
