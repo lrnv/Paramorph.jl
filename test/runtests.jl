@@ -87,6 +87,16 @@ end
         @test_throws ArgumentError intrinsic_dimension(RuntimeSizedSimplex{Float64})
         @test_throws ArgumentError constraint(RuntimeSizedSimplex{Float64}, zeros(2))
 
+        @test intrinsic_dimension(
+            RuntimeSizedSimplex{Float64}; auxiliary=(; n=3),
+        ) == 2
+        typed = constraint(
+            RuntimeSizedSimplex{Float64}, zeros(2); auxiliary=(; n=3),
+        )
+        @test typed.n == 3
+        @test length(typed.weights) == 3
+        @test sum(typed.weights) ≈ 1.0
+
         y = constraint(x, zeros(2))
         @test y.n == 3
         @test length(y.weights) == 3
@@ -97,6 +107,14 @@ end
         x = OpaqueVectorGeometry(3, [0.2, -0.4, 0.8])
         @test intrinsic_dimension(x) == 3
         @test_throws ArgumentError intrinsic_dimension(OpaqueVectorGeometry{Float64})
+        @test intrinsic_dimension(
+            OpaqueVectorGeometry{Float64}; auxiliary=(; n=3),
+        ) == 3
+        typed = constraint(
+            OpaqueVectorGeometry{Float64}, zeros(3); auxiliary=(; n=3),
+        )
+        @test typed.n == 3
+        @test all(iszero, typed.θ)
         @test unconstrain(constraint(x, unconstrain(x))) ≈ unconstrain(x)
         @test all(abs.(constraint(x, zeros(3)).θ) .<= 1)
     end
@@ -126,6 +144,17 @@ end
         )
         @test intrinsic_dimension(x) == 3
         @test_throws ArgumentError intrinsic_dimension(RuntimeCompositeGeometry{Float64})
+        @test intrinsic_dimension(
+            RuntimeCompositeGeometry{Float64}; auxiliary=(; d=2),
+        ) == 3
+        typed = constraint(
+            RuntimeCompositeGeometry{Float64}, zeros(3); auxiliary=(; d=2),
+        )
+        @test typed.d == 2
+        @test length(typed.radial) == 1
+        @test length(typed.simplices) == 2
+        @test all(w -> sum(w) ≈ 1.0, typed.simplices)
+
         rebuilt = constraint(x, zeros(3))
         @test rebuilt.d == 2
         @test length(rebuilt.radial) == 1
