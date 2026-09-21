@@ -4,13 +4,57 @@ using Test
 
 const TV = Paramorph.TransformVariables
 
+@paramorph T struct PositiveScale{T<:Real}
+    scale::T ~ TV.asℝ₊
+    label::String = "default"
+end
+
+@paramorph T struct DynamicSimplex{T<:Real}
+    n::Int
+    weights::Vector{T} ~ TV.UnitSimplex(n)
+end
+
+@paramorph T struct Child{T<:Real}
+    θ::T ~ closed_lower(get(context, :lower, -one(T)))
+end
+
+@paramorph T struct Parent{D,T<:Real}
+    child::Child{T} ~ nested(lower=-inv(T(D - 1)))
+end
+
+@paramorph T struct Leaf{T<:Real}
+    x::T ~ TV.asℝ₊
+end
+
+@paramorph T struct Forest{N,T<:Real}
+    children::Vector{Leaf{T}} ~ recursive(N)
+end
+
+@paramorph T struct TawnLike{T<:Real}
+    d::Int
+    dep::Vector{T} ~ TV.as(Vector, closed_lower(one(T)), 2^d - d - 1)
+    weights::Vector{Vector{T}} ~ repeat_transform(TV.UnitSimplex(2^(d - 1)), d)
+end
+
+function ordered_pair_transform()
+    base = TV.as((lower=TV.asℝ, gap=TV.asℝ₊))
+    forward = p -> (; lower=p.lower, upper=p.lower + p.gap)
+    backward = p -> (; lower=p.lower, gap=p.upper - p.lower)
+    return joint_transform(base, forward, backward)
+end
+
+@paramorph T struct OrderedPair{T<:Real}
+    lower::T
+    upper::T
+    @geometry ((lower, upper) ~ ordered_pair_transform())
+end
+
+@paramorph T struct Probability{T<:Real}
+    p::T ~ bounded_interval(zero(T), one(T))
+end
+
 @testset "Paramorph" begin
     @testset "storage and geometry are separate" begin
-        @paramorph T struct PositiveScale{T<:Real}
-            scale::T ~ TV.asℝ₊
-            label::String = "default"
-        end
-
         x = PositiveScale(2.0, "custom")
         @test Paramorph.parameter_fields(typeof(x)) == (:scale,)
         @test Paramorph.auxiliary_fields(typeof(x)) == (:label,)
@@ -30,11 +74,6 @@ const TV = Paramorph.TransformVariables
     end
 
     @testset "runtime field dependent geometry" begin
-        @paramorph T struct DynamicSimplex{T<:Real}
-            n::Int
-            weights::Vector{T} ~ TV.UnitSimplex(n)
-        end
-
         x = DynamicSimplex(3, [0.2, 0.3, 0.5])
         @test intrinsic_dimension(x) == 2
         @test_throws ArgumentError intrinsic_dimension(DynamicSimplex{Float64})
@@ -47,14 +86,6 @@ const TV = Paramorph.TransformVariables
     end
 
     @testset "nested context" begin
-        @paramorph T struct Child{T<:Real}
-            θ::T ~ closed_lower(get(context, :lower, -one(T)))
-        end
-
-        @paramorph T struct Parent{D,T<:Real}
-            child::Child{T} ~ nested(lower=-inv(T(D - 1)))
-        end
-
         p = Parent{3}(Child(0.2))
         @test intrinsic_dimension(Parent{3,Float64}) == 1
         q = constraint(Parent{3,Float64}, [0.0])
@@ -65,14 +96,6 @@ const TV = Paramorph.TransformVariables
     end
 
     @testset "recursive nested structures" begin
-        @paramorph T struct Leaf{T<:Real}
-            x::T ~ TV.asℝ₊
-        end
-
-        @paramorph T struct Forest{N,T<:Real}
-            children::Vector{Leaf{T}} ~ recursive(N)
-        end
-
         f = Forest{2}([Leaf(1.0), Leaf(2.0)])
         @test intrinsic_dimension(Forest{2,Float64}) == 2
         rebuilt = constraint(f, unconstrain(f))
@@ -80,12 +103,6 @@ const TV = Paramorph.TransformVariables
     end
 
     @testset "Copulas-style value dependent declarations" begin
-        @paramorph T struct TawnLike{T<:Real}
-            d::Int
-            dep::Vector{T} ~ TV.as(Vector, closed_lower(one(T)), 2^d - d - 1)
-            weights::Vector{Vector{T}} ~ repeat_transform(TV.UnitSimplex(2^(d - 1)), d)
-        end
-
         t = TawnLike(
             2,
             [1.5],
@@ -101,19 +118,6 @@ const TV = Paramorph.TransformVariables
     end
 
     @testset "global coupled geometry" begin
-        function ordered_pair_transform()
-            base = TV.as((lower=TV.asℝ, gap=TV.asℝ₊))
-            forward = p -> (; lower=p.lower, upper=p.lower + p.gap)
-            backward = p -> (; lower=p.lower, gap=p.upper - p.lower)
-            return joint_transform(base, forward, backward)
-        end
-
-        @paramorph T struct OrderedPair{T<:Real}
-            lower::T
-            upper::T
-            @geometry ((lower, upper) ~ ordered_pair_transform())
-        end
-
         pair = OrderedPair(0.0, 2.0)
         @test Paramorph.parameter_fields(typeof(pair)) == (:lower, :upper)
         @test Paramorph.auxiliary_fields(typeof(pair)) == ()
@@ -126,10 +130,6 @@ const TV = Paramorph.TransformVariables
     end
 
     @testset "constructor validation" begin
-        @paramorph T struct Probability{T<:Real}
-            p::T ~ bounded_interval(zero(T), one(T))
-        end
-
         @test Probability(0.0).p == 0.0
         @test Probability(1.0).p == 1.0
         @test_throws DomainError Probability(-0.1)
