@@ -16,13 +16,15 @@ constraint after a tilde:
     label::String = "default"
 end
 
-s = Scale(2.0, "custom")
+s = Scale{Float64}(2.0, "custom")
 θ = unconstrain(s)
 constraint(s, θ)
 ```
 
 `label` has no `~`, so it is auxiliary and does not consume optimizer
-coordinates.
+coordinates. Structs with auxiliary fields intentionally do not receive an
+inferred unparameterized outer constructor: use the fully parameterized
+constructor, as above, or define a domain-specific outer constructor.
 
 Type-based reconstruction is possible when geometry is determined entirely by
 the type:
@@ -44,14 +46,15 @@ Transformation expressions may refer directly to fields:
     value::Vector{T} ~ TV.UnitSimplex(n)
 end
 
-w = Weights(3, [0.2, 0.3, 0.5])
+w = Weights{Float64}(3, [0.2, 0.3, 0.5])
 intrinsic_dimension(w)
 constraint(w, zeros(2))
 ```
 
 Here `n` is only stored at runtime, so `Weights{Float64}` cannot by itself
 identify a parameter space. Use a prototype object for `constraint` and
-`intrinsic_dimension`.
+`intrinsic_dimension`, or pass the auxiliary field explicitly to type-based
+operations.
 
 ## Type-dependent geometry
 
