@@ -10,6 +10,7 @@ TransformVariables = "84d833dd-6860-57f9-a1a7-6da5db126cff"
 [compat]
 Aqua = "0.8.18"
 LinearAlgebra = "1"
+Test = "1"
 TransformVariables = "0.8.26"
 julia = "1.10"
 
