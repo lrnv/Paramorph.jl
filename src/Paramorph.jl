@@ -466,8 +466,8 @@ macro paramorph(numeric_parameter, expr)
             Expr(:(=), r.name, field_schema_expr(r, nothing, false))
             for r in parameter_records
         ]
-        value_schema_expr = :(TransformVariables.as(($(value_schema_pairs...),)))
-        type_schema_expr = :(TransformVariables.as(($(type_schema_pairs...),)))
+        value_schema_expr = :(Paramorph.TransformVariables.as(($(value_schema_pairs...),)))
+        type_schema_expr = :(Paramorph.TransformVariables.as(($(type_schema_pairs...),)))
     else
         value_schema_expr = global_geometry
         type_schema_expr = global_geometry
@@ -555,10 +555,44 @@ macro paramorph(numeric_parameter, expr)
         end
     end
 
-    struct_body = Expr(:block, clean_fields...)
+    # `new` is only legal in an inner constructor.  Reconstruction uses a
+    # private trusted token because the transform has already established that
+    # the constrained value belongs to the declared geometry.
+    trusted_constructor = quote
+        function $struct_name{$(type_args...)}(
+            ::Paramorph.TrustedConstruction,
+            $(clean_fields...),
+        ) where {$(type_params...)}
+            return new{$(type_args...)}($(r.name for r in field_records...))
+        end
+    end
+    struct_body = Expr(:block, clean_fields..., trusted_constructor.args...)
     struct_expr = supertype === nothing ?
         Expr(:struct, false, declaration, struct_body) :
         Expr(:struct, false, Expr(:(<:), declaration, supertype), struct_body)
+
+    # Julia's default outer constructors would bypass geometry validation.  For
+    # the common layout where the numeric parameter is final, also recreate the
+    # convenient partially-parameterized constructor and infer the numeric type
+    # from the typed field arguments.
+    inferred_constructor = nothing
+    if numeric_index == length(type_args)
+        prefix_args = type_args[1:end-1]
+        prefix_params = type_params[1:end-1]
+        target = isempty(prefix_args) ? struct_name : :($struct_name{$(prefix_args...)})
+        inferred_constructor = quote
+            function $target($(clean_fields...)) where {$(prefix_params...), $numeric_parameter_decl}
+                values = $all_values
+                Paramorph._validate_constrained(
+                    $struct_name{$(type_args...)}, values,
+                )
+                return $struct_name{$(type_args...)}(
+                    Paramorph._trusted_construction,
+                    $(r.name for r in field_records...),
+                )
+            end
+        end
+    end
 
     methods = quote
         Paramorph.is_paramorph_type(::Type{<:$struct_name}) = true
@@ -630,18 +664,16 @@ macro paramorph(numeric_parameter, expr)
             return S(Paramorph._trusted_construction, $(prototype_field_values...))
         end
 
-        function $struct_name{$(type_args...)}(
-            ::Paramorph.TrustedConstruction,
-            $(clean_fields...),
-        ) where {$(type_params...)}
-            return new{$(type_args...)}($(r.name for r in field_records...))
-        end
-
         function $struct_name{$(type_args...)}($(clean_fields...)) where {$(type_params...)}
             values = $all_values
             Paramorph._validate_constrained($struct_name{$(type_args...)}, values)
-            return $struct_name{$(type_args...)}(Paramorph._trusted_construction, $(r.name for r in field_records...))
+            return $struct_name{$(type_args...)}(
+                Paramorph._trusted_construction,
+                $(r.name for r in field_records...),
+            )
         end
+
+        $inferred_constructor
     end
 
     return esc(quote
