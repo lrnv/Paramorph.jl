@@ -1,0 +1,31 @@
+name: Apply Paramorph macro helper fixes
+
+on:
+  push:
+    branches:
+      - paramorph-0.0.3-dsl
+
+permissions:
+  contents: write
+
+jobs:
+  apply:
+    if: github.actor != 'github-actions[bot]'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: paramorph-0.0.3-dsl
+      - name: Apply macro fixes
+        run: python dev/fix_macro_helpers.py
+      - name: Commit macro fixes
+        run: |
+          git config user.name github-actions[bot]
+          git config user.email 41898282+github-actions[bot]@users.noreply.github.com
+          git add src/Paramorph.jl
+          if git diff --cached --quiet; then
+            echo "No changes"
+          else
+            git commit -m "Fix generated parameter helpers"
+            git push origin HEAD:paramorph-0.0.3-dsl
+          fi
