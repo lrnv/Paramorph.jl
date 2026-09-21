@@ -600,8 +600,15 @@ macro paramorph(numeric_parameter, expr)
         prefix_args = type_args[1:end-1]
         prefix_params = type_params[1:end-1]
         target = isempty(prefix_args) ? struct_name : :($struct_name{$(prefix_args...)})
+        # Auxiliary fields do not participate in numeric-type inference. Leaving
+        # them untyped makes this convenience constructor less specific than
+        # domain constructors that intentionally interpret auxiliary arguments.
+        inferred_fields = [
+            r.is_parameter ? :( $(r.name)::$(r.storage) ) : r.name
+            for r in field_records
+        ]
         inferred_constructor = quote
-            function $target($(clean_fields...)) where {$(prefix_params...), $numeric_parameter_decl}
+            function $target($(inferred_fields...)) where {$(prefix_params...), $numeric_parameter_decl}
                 values = $all_values
                 Paramorph._validate_constrained(
                     $struct_name{$(type_args...)}, values,
