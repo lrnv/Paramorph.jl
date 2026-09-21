@@ -449,6 +449,10 @@ macro paramorph(numeric_parameter, expr)
     end
 
     bind_from_values = [:( $(r.name) = getproperty(values, $(QuoteNode(r.name))) ) for r in field_records]
+    bind_from_prototype = [
+        :( $(r.name) = getproperty(prototype, $(QuoteNode(r.name))) )
+        for r in field_records
+    ]
 
     auxiliary_bindings = Any[]
     for r in field_records
@@ -677,6 +681,7 @@ macro paramorph(numeric_parameter, expr)
         function Paramorph._reconstruct_declared_from_prototype(
             prototype::$struct_name, ::Type{S}, constrained::NamedTuple, context::NamedTuple,
         ) where {$(type_params...), S<:$struct_name{$(type_args...)}}
+            $(bind_from_prototype...)
             return S(Paramorph._trusted_construction, $(prototype_field_values...))
         end
 
