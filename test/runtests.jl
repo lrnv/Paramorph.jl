@@ -4,36 +4,44 @@ using Test
 
 const TV = Paramorph.TransformVariables
 
-@paramorph T struct PositiveScale{T<:Real}
+@paramorph T struct PositiveScalarParameter{T<:Real}
     scale::T ~ TV.asℝ₊
     label::String = "default"
 end
 
-@paramorph T struct DynamicSimplex{T<:Real}
+@paramorph T struct RuntimeSizedSimplex{T<:Real}
     n::Int
     weights::Vector{T} ~ TV.UnitSimplex(n)
 end
 
-@paramorph T struct Child{T<:Real}
+opaque_vector_geometry(n, ::Type{T}) where {T} =
+    TV.as(Vector, bounded_interval(-one(T), one(T)), n)
+
+@paramorph T struct OpaqueVectorGeometry{T<:Real}
+    n::Int
+    θ::Vector{T} ~ opaque_vector_geometry(n, T)
+end
+
+@paramorph T struct ContextBoundScalar{T<:Real}
     θ::T ~ closed_lower(get(context, :lower, -one(T)))
 end
 
-@paramorph T struct Parent{D,T<:Real}
-    child::Child{T} ~ nested(lower=-inv(T(D - 1)))
+@paramorph T struct NestedContextContainer{D,T<:Real}
+    child::ContextBoundScalar{T} ~ nested(lower=-inv(T(D - 1)))
 end
 
-@paramorph T struct Leaf{T<:Real}
+@paramorph T struct PositiveLeaf{T<:Real}
     x::T ~ TV.asℝ₊
 end
 
-@paramorph T struct Forest{N,T<:Real}
-    children::Vector{Leaf{T}} ~ recursive(N)
+@paramorph T struct RecursivePositiveCollection{N,T<:Real}
+    children::Vector{PositiveLeaf{T}} ~ recursive(N)
 end
 
-@paramorph T struct TawnLike{T<:Real}
+@paramorph T struct RuntimeCompositeGeometry{T<:Real}
     d::Int
-    dep::Vector{T} ~ TV.as(Vector, closed_lower(one(T)), 2^d - d - 1)
-    weights::Vector{Vector{T}} ~ repeat_transform(TV.UnitSimplex(2^(d - 1)), d)
+    radial::Vector{T} ~ TV.as(Vector, closed_lower(one(T)), 2^d - d - 1)
+    simplices::Vector{Vector{T}} ~ repeat_transform(TV.UnitSimplex(2^(d - 1)), d)
 end
 
 function ordered_pair_transform()
@@ -43,41 +51,41 @@ function ordered_pair_transform()
     return joint_transform(base, forward, backward)
 end
 
-@paramorph T struct OrderedPair{T<:Real}
+@paramorph T struct CoupledOrderedPair{T<:Real}
     lower::T
     upper::T
     @geometry ((lower, upper) ~ ordered_pair_transform())
 end
 
-@paramorph T struct Probability{T<:Real}
+@paramorph T struct UnitIntervalParameter{T<:Real}
     p::T ~ bounded_interval(zero(T), one(T))
 end
 
 @testset "Paramorph" begin
     @testset "storage and geometry are separate" begin
-        x = PositiveScale(2.0, "custom")
+        x = PositiveScalarParameter(2.0, "custom")
         @test Paramorph.parameter_fields(typeof(x)) == (:scale,)
         @test Paramorph.auxiliary_fields(typeof(x)) == (:label,)
         @test intrinsic_dimension(x) == 1
         @test unconstrain(constraint(x, unconstrain(x))) ≈ unconstrain(x)
 
-        from_type = constraint(PositiveScale{Float64}, [0.0])
+        from_type = constraint(PositiveScalarParameter{Float64}, [0.0])
         @test from_type.scale ≈ 1.0
         @test from_type.label == "default"
 
-        rebound = constraint(PositiveScale{Float64}, Float32[0.0])
-        @test rebound isa PositiveScale{Float32}
+        rebound = constraint(PositiveScalarParameter{Float64}, Float32[0.0])
+        @test rebound isa PositiveScalarParameter{Float32}
 
-        y, logjac = constraint_with_logjac(PositiveScale{Float64}, [0.0])
+        y, logjac = constraint_with_logjac(PositiveScalarParameter{Float64}, [0.0])
         @test y.scale ≈ 1.0
         @test logjac ≈ 0.0
     end
 
-    @testset "runtime field dependent geometry" begin
-        x = DynamicSimplex(3, [0.2, 0.3, 0.5])
+    @testset "runtime-sized simplex geometry" begin
+        x = RuntimeSizedSimplex(3, [0.2, 0.3, 0.5])
         @test intrinsic_dimension(x) == 2
-        @test_throws ArgumentError intrinsic_dimension(DynamicSimplex{Float64})
-        @test_throws ArgumentError constraint(DynamicSimplex{Float64}, zeros(2))
+        @test_throws ArgumentError intrinsic_dimension(RuntimeSizedSimplex{Float64})
+        @test_throws ArgumentError constraint(RuntimeSizedSimplex{Float64}, zeros(2))
 
         y = constraint(x, zeros(2))
         @test y.n == 3
@@ -85,55 +93,63 @@ end
         @test sum(y.weights) ≈ 1.0
     end
 
-    @testset "nested context" begin
-        p = Parent{3}(Child(0.2))
-        @test intrinsic_dimension(Parent{3,Float64}) == 1
-        q = constraint(Parent{3,Float64}, [0.0])
-        @test q isa Parent{3,Float64}
-        @test q.child isa Child{Float64}
+    @testset "opaque runtime vector geometry" begin
+        x = OpaqueVectorGeometry(3, [0.2, -0.4, 0.8])
+        @test intrinsic_dimension(x) == 3
+        @test_throws ArgumentError intrinsic_dimension(OpaqueVectorGeometry{Float64})
+        @test unconstrain(constraint(x, unconstrain(x))) ≈ unconstrain(x)
+        @test all(abs.(constraint(x, zeros(3)).θ) .<= 1)
+    end
+
+    @testset "nested context geometry" begin
+        p = NestedContextContainer{3}(ContextBoundScalar(0.2))
+        @test intrinsic_dimension(NestedContextContainer{3,Float64}) == 1
+        q = constraint(NestedContextContainer{3,Float64}, [0.0])
+        @test q isa NestedContextContainer{3,Float64}
+        @test q.child isa ContextBoundScalar{Float64}
         @test q.child.θ ≈ 0.5
         @test unconstrain(constraint(p, unconstrain(p))) ≈ unconstrain(p)
     end
 
-    @testset "recursive nested structures" begin
-        f = Forest{2}([Leaf(1.0), Leaf(2.0)])
-        @test intrinsic_dimension(Forest{2,Float64}) == 2
+    @testset "recursive nested geometry" begin
+        f = RecursivePositiveCollection{2}([PositiveLeaf(1.0), PositiveLeaf(2.0)])
+        @test intrinsic_dimension(RecursivePositiveCollection{2,Float64}) == 2
         rebuilt = constraint(f, unconstrain(f))
         @test [leaf.x for leaf in rebuilt.children] ≈ [1.0, 2.0]
     end
 
-    @testset "Copulas-style value dependent declarations" begin
-        t = TawnLike(
+    @testset "runtime composite geometry" begin
+        x = RuntimeCompositeGeometry(
             2,
             [1.5],
             [[0.4, 0.6], [0.7, 0.3]],
         )
-        @test intrinsic_dimension(t) == 3
-        @test_throws ArgumentError intrinsic_dimension(TawnLike{Float64})
-        rebuilt = constraint(t, zeros(3))
+        @test intrinsic_dimension(x) == 3
+        @test_throws ArgumentError intrinsic_dimension(RuntimeCompositeGeometry{Float64})
+        rebuilt = constraint(x, zeros(3))
         @test rebuilt.d == 2
-        @test length(rebuilt.dep) == 1
-        @test length(rebuilt.weights) == 2
-        @test all(w -> sum(w) ≈ 1.0, rebuilt.weights)
+        @test length(rebuilt.radial) == 1
+        @test length(rebuilt.simplices) == 2
+        @test all(w -> sum(w) ≈ 1.0, rebuilt.simplices)
     end
 
     @testset "global coupled geometry" begin
-        pair = OrderedPair(0.0, 2.0)
+        pair = CoupledOrderedPair(0.0, 2.0)
         @test Paramorph.parameter_fields(typeof(pair)) == (:lower, :upper)
         @test Paramorph.auxiliary_fields(typeof(pair)) == ()
-        @test intrinsic_dimension(OrderedPair{Float64}) == 2
-        @test_throws DomainError OrderedPair(2.0, 1.0)
+        @test intrinsic_dimension(CoupledOrderedPair{Float64}) == 2
+        @test_throws DomainError CoupledOrderedPair(2.0, 1.0)
 
-        zero_pair = constraint(OrderedPair{Float64}, zeros(2))
+        zero_pair = constraint(CoupledOrderedPair{Float64}, zeros(2))
         @test zero_pair.lower ≈ 0.0
         @test zero_pair.upper ≈ 1.0
     end
 
     @testset "constructor validation" begin
-        @test Probability(0.0).p == 0.0
-        @test Probability(1.0).p == 1.0
-        @test_throws DomainError Probability(-0.1)
-        @test_throws DomainError Probability(1.1)
+        @test UnitIntervalParameter(0.0).p == 0.0
+        @test UnitIntervalParameter(1.0).p == 1.0
+        @test_throws DomainError UnitIntervalParameter(-0.1)
+        @test_throws DomainError UnitIntervalParameter(1.1)
     end
 end
 
