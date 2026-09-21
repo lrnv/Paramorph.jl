@@ -82,6 +82,10 @@ function _schema_from_values(T::Type, values::NamedTuple, context::NamedTuple)
     throw(ArgumentError("$T does not declare a Paramorph geometry"))
 end
 
+function _schema_from_auxiliary(T::Type, auxiliary::NamedTuple, context::NamedTuple)
+    throw(ArgumentError("$T does not declare a Paramorph geometry"))
+end
+
 function _parameter_values_from_values(T::Type, values::NamedTuple, context::NamedTuple)
     throw(ArgumentError("$T does not declare Paramorph parameters"))
 end
@@ -225,6 +229,8 @@ end
 # Macro-generated methods specialize these two hooks so that nested/recursive
 # fields are reconstructed according to their declared geometry descriptor.
 _reconstruct_declared_from_type(T::Type, constrained::NamedTuple, context::NamedTuple) =
+    _reconstruct_declared_from_type(T, constrained, context, NamedTuple())
+_reconstruct_declared_from_type(T::Type, constrained::NamedTuple, context::NamedTuple, auxiliary::NamedTuple) =
     _reconstruct_from_type(T, constrained)
 _reconstruct_declared_from_prototype(prototype, T::Type, constrained::NamedTuple, context::NamedTuple) =
     _reconstruct_from_prototype(prototype, T, constrained)
@@ -233,8 +239,16 @@ _reconstruct_declared_from_prototype(prototype, T::Type, constrained::NamedTuple
 # Public coordinate operations
 # -----------------------------------------------------------------------------
 
-intrinsic_dimension(T::Type; context=NamedTuple()) =
-    TransformVariables.dimension(transformation_schema(T, context))
+function _type_schema(T::Type, context::NamedTuple, auxiliary::NamedTuple)
+    supports_type_geometry(T) || throw(ArgumentError(
+        "$T has parameter geometry depending on constrained parameter values; use a prototype object",
+    ))
+    return isempty(auxiliary) ? transformation_schema(T, context) :
+        _schema_from_auxiliary(T, auxiliary, context)
+end
+
+intrinsic_dimension(T::Type; context=NamedTuple(), auxiliary=NamedTuple()) =
+    TransformVariables.dimension(_type_schema(T, context, auxiliary))
 intrinsic_dimension(object; context=NamedTuple()) =
     TransformVariables.dimension(transformation_schema(object, context))
 
@@ -243,17 +257,17 @@ parameter_values(object; context=NamedTuple()) = begin
     _parameter_values_from_values(typeof(object), values, context)
 end
 
-function constraint(T::Type, coordinates::AbstractVector{<:Real}; context=NamedTuple())
-    supports_type_geometry(T) || throw(ArgumentError(
-        "$T has value-dependent parameter geometry; use a prototype object",
-    ))
+function constraint(
+    T::Type, coordinates::AbstractVector{<:Real};
+    context=NamedTuple(), auxiliary=NamedTuple(),
+)
     target = rebind_numeric_type(T, eltype(coordinates))
-    schema = transformation_schema(target, context)
+    schema = _type_schema(target, context, auxiliary)
     length(coordinates) == TransformVariables.dimension(schema) || throw(DimensionMismatch(
         "expected $(TransformVariables.dimension(schema)) coordinates, got $(length(coordinates))",
     ))
     constrained = TransformVariables.transform(schema, coordinates)
-    return _reconstruct_declared_from_type(target, constrained, context)
+    return _reconstruct_declared_from_type(target, constrained, context, auxiliary)
 end
 
 function constraint(prototype, coordinates::AbstractVector{<:Real}; context=NamedTuple())
@@ -266,17 +280,17 @@ function constraint(prototype, coordinates::AbstractVector{<:Real}; context=Name
     return _reconstruct_declared_from_prototype(prototype, target, constrained, context)
 end
 
-function constraint_with_logjac(T::Type, coordinates::AbstractVector{<:Real}; context=NamedTuple())
-    supports_type_geometry(T) || throw(ArgumentError(
-        "$T has value-dependent parameter geometry; use a prototype object",
-    ))
+function constraint_with_logjac(
+    T::Type, coordinates::AbstractVector{<:Real};
+    context=NamedTuple(), auxiliary=NamedTuple(),
+)
     target = rebind_numeric_type(T, eltype(coordinates))
-    schema = transformation_schema(target, context)
+    schema = _type_schema(target, context, auxiliary)
     length(coordinates) == TransformVariables.dimension(schema) || throw(DimensionMismatch(
         "expected $(TransformVariables.dimension(schema)) coordinates, got $(length(coordinates))",
     ))
     constrained, logjac = TransformVariables.transform_and_logjac(schema, coordinates)
-    return _reconstruct_declared_from_type(target, constrained, context), logjac
+    return _reconstruct_declared_from_type(target, constrained, context, auxiliary), logjac
 end
 
 function constraint_with_logjac(prototype, coordinates::AbstractVector{<:Real}; context=NamedTuple())
@@ -489,14 +503,35 @@ macro paramorph(numeric_parameter, expr)
     defaults = Expr(:tuple, [:( $(r.name) = $(r.default) ) for r in field_records if !r.is_parameter && r.default !== nothing]...)
 
     field_set = Set(field_names)
-    runtime_dependent = if global_geometry === nothing
-        any(r -> r.is_parameter && _contains_field_reference(r.geometry, field_set), field_records)
+    parameter_set = Set(parameter_names)
+    auxiliary_set = Set(auxiliary_names)
+    parameter_dependent = if global_geometry === nothing
+        any(r -> r.is_parameter && _contains_field_reference(r.geometry, parameter_set), field_records)
     else
-        _contains_field_reference(global_geometry, field_set)
+        _contains_field_reference(global_geometry, parameter_set)
+    end
+    auxiliary_dependent = if global_geometry === nothing
+        any(r -> r.is_parameter && _contains_field_reference(r.geometry, auxiliary_set), field_records)
+    else
+        _contains_field_reference(global_geometry, auxiliary_set)
     end
 
-    # Bind every field name while evaluating runtime geometry expressions.
+    # Bind every field name while evaluating geometry from a concrete object.
     bind_from_values = [:( $(r.name) = getproperty(values, $(QuoteNode(r.name))) ) for r in field_records]
+
+    # Type-based geometry may use stored auxiliary fields when the caller supplies
+    # them explicitly. Defaults remain available for auxiliary fields that have one.
+    auxiliary_bindings = Any[]
+    for r in field_records
+        r.is_parameter && continue
+        fallback = r.default === nothing ?
+            :(throw(ArgumentError(string(S, " needs auxiliary field ", $(string(r.name)), " for type-based parameter geometry")))) :
+            r.default
+        push!(auxiliary_bindings, :(
+            $(r.name) = hasproperty(auxiliary, $(QuoteNode(r.name))) ?
+                getproperty(auxiliary, $(QuoteNode(r.name))) : $fallback
+        ))
+    end
 
     if global_geometry === nothing
         value_schema_pairs = Any[]
@@ -621,9 +656,17 @@ macro paramorph(numeric_parameter, expr)
 
     rebound_args = [name == numeric_parameter ? :ParamorphNumeric : name for name in type_args]
 
-    type_schema_body = runtime_dependent ? :(throw(ArgumentError(string(
-        S, " has parameter geometry depending on runtime field values; use a prototype object",
-    )))) : type_schema_expr
+    type_schema_body = if parameter_dependent
+        :(throw(ArgumentError(string(
+            S, " has parameter geometry depending on constrained parameter values; use a prototype object",
+        ))))
+    elseif auxiliary_dependent
+        :(throw(ArgumentError(string(
+            S, " has parameter geometry depending on auxiliary field values; pass `auxiliary=(; ...)` or use a prototype object",
+        ))))
+    else
+        type_schema_expr
+    end
 
     return esc(quote
         $struct_definition
@@ -638,7 +681,7 @@ macro paramorph(numeric_parameter, expr)
             return $defaults
         end
         Paramorph.numeric_type(::Type{<:$struct_name{$(type_args...)}}) where {$(type_params...)} = $numeric_parameter
-        Paramorph.supports_type_geometry(::Type{<:$struct_name}) = $(!runtime_dependent)
+        Paramorph.supports_type_geometry(::Type{<:$struct_name}) = $(!parameter_dependent)
 
         function Paramorph.rebind_numeric_type(
             ::Type{<:$struct_name{$(type_args...)}},
@@ -667,6 +710,16 @@ macro paramorph(numeric_parameter, expr)
             return $type_schema_body
         end
 
+        function Paramorph._schema_from_auxiliary(
+            ::Type{S}, auxiliary::NamedTuple, context::NamedTuple,
+        ) where {$(type_params...), S<:$struct_name{$(type_args...)}}
+            $parameter_dependent && throw(ArgumentError(string(
+                S, " has parameter geometry depending on constrained parameter values; use a prototype object",
+            )))
+            $(auxiliary_bindings...)
+            return $type_schema_expr
+        end
+
         function Paramorph._parameter_values_from_values(
             ::Type{S}, values::NamedTuple, context::NamedTuple,
         ) where {$(type_params...), S<:$struct_name{$(type_args...)}}
@@ -677,10 +730,21 @@ macro paramorph(numeric_parameter, expr)
         function Paramorph._reconstruct_declared_from_type(
             ::Type{S}, constrained::NamedTuple, context::NamedTuple,
         ) where {$(type_params...), S<:$struct_name{$(type_args...)}}
-            $(runtime_dependent ? :(throw(ArgumentError(string(
+            return Paramorph._reconstruct_declared_from_type(
+                S, constrained, context, NamedTuple(),
+            )
+        end
+
+        function Paramorph._reconstruct_declared_from_type(
+            ::Type{S}, constrained::NamedTuple, context::NamedTuple, auxiliary::NamedTuple,
+        ) where {$(type_params...), S<:$struct_name{$(type_args...)}}
+            $parameter_dependent && throw(ArgumentError(string(
                 S, " has value-dependent parameter geometry; use a prototype object",
-            )))) : nothing)
-            return S(Paramorph._trusted_construction, $(type_field_values...))
+            )))
+            $(auxiliary_bindings...)
+            return S(Paramorph._trusted_construction, $(
+                [r.is_parameter ? get(type_reconstructed_parameters, r.name, :(getproperty(constrained, $(QuoteNode(r.name))))) : r.name for r in field_records]...
+            ))
         end
 
         function Paramorph._reconstruct_declared_from_prototype(
