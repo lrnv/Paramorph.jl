@@ -1,0 +1,30 @@
+name: Apply strict lower-bound geometry
+
+on:
+  push:
+    branches:
+      - paramorph-0.0.3-dsl
+
+permissions:
+  contents: write
+
+jobs:
+  apply:
+    if: github.actor != 'github-actions[bot]'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: paramorph-0.0.3-dsl
+      - run: python dev/add_open_lower.py
+      - name: Commit source/tests/docs
+        run: |
+          git config user.name github-actions[bot]
+          git config user.email 41898282+github-actions[bot]@users.noreply.github.com
+          git add src test docs
+          if git diff --cached --quiet; then
+            echo "No changes"
+          else
+            git commit -m "Add strictly lower-bounded geometry"
+            git push origin HEAD:paramorph-0.0.3-dsl
+          fi
