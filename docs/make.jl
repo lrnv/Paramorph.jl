@@ -7,6 +7,7 @@ makedocs(;
     modules=[Paramorph],
     authors="Oskar Laverny <oskar.laverny@univ-amu.fr> and contributors",
     sitename="Paramorph.jl",
+    checkdocs=:exports,
     format=Documenter.HTML(;
         canonical="https://lrnv.github.io/Paramorph.jl",
         edit_link="main",
