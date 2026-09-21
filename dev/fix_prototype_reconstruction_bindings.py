@@ -3,8 +3,7 @@ from pathlib import Path
 path = Path("src/Paramorph.jl")
 text = path.read_text()
 
-needle = '''    # Bind every field name while evaluating geometry from a concrete object.
-    bind_from_values = [:( $(r.name) = getproperty(values, $(QuoteNode(r.name))) ) for r in field_records]
+needle = '''    bind_from_values = [:( $(r.name) = getproperty(values, $(QuoteNode(r.name))) ) for r in field_records]
 '''
 replacement = needle + '''    bind_from_prototype = [
         :( $(r.name) = getproperty(prototype, $(QuoteNode(r.name))) )
