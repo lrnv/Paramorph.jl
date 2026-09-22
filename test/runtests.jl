@@ -189,4 +189,6 @@ end
     end
 end
 
+include("matrix_geometries.jl")
+
 Aqua.test_all(Paramorph)
