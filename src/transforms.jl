@@ -502,6 +502,8 @@ struct ClosedCorrelationMatrix{G} <: TransformVariables.VectorTransform
     n::Int
     interior::G
 end
+
+"""`closed_correlation_matrix(n)` transforms coordinates into an `n × n` correlation matrix, including boundaries."""
 closed_correlation_matrix(n::Integer) =
     ClosedCorrelationMatrix(Int(n), correlation_matrix(n))
 TransformVariables.dimension(t::ClosedCorrelationMatrix) =
@@ -558,6 +560,8 @@ struct CompactVariogramMatrix{G} <: TransformVariables.VectorTransform
     d::Int
     interior::G
 end
+
+"""`compact_variogram_matrix(d)` transforms coordinates into a strict `d × d` variogram, including boundaries."""
 compact_variogram_matrix(d::Integer) =
     CompactVariogramMatrix(Int(d), variogram_matrix(d))
 TransformVariables.dimension(t::CompactVariogramMatrix) =
