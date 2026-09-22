@@ -52,8 +52,10 @@ open_lower
 nonnegative
 bounded_interval
 correlation_matrix
+closed_correlation_matrix
 positive_definite_matrix
 variogram_matrix
+compact_variogram_matrix
 repeat_transform
 joint_transform
 polytope
