@@ -493,3 +493,147 @@ function TransformVariables.inverse_at!(x::AbstractVector, index,
     x[index:(index + length(delta) - 1)] .= radius .* direction
     return index + length(delta)
 end
+
+# Closed matrix geometries used by models whose natural constrained spaces have
+# distinguished boundary points that finite Euclidean coordinates cannot reach.
+export closed_correlation_matrix, compact_variogram_matrix
+
+struct ClosedCorrelationMatrix{G} <: TransformVariables.VectorTransform
+    n::Int
+    interior::G
+end
+closed_correlation_matrix(n::Integer) =
+    ClosedCorrelationMatrix(Int(n), correlation_matrix(n))
+TransformVariables.dimension(t::ClosedCorrelationMatrix) =
+    TransformVariables.dimension(t.interior)
+
+_closed_complete_correlation(::Type{T}, n::Int) where {T} = ones(T, n, n)
+_closed_is_complete_correlation(R::AbstractMatrix) = all(isone, R)
+
+"""
+    closed_correlation_matrix(n)
+
+Extend `correlation_matrix(n)` with the all-ones correlation matrix as a closed
+boundary point. That boundary is represented by an all-`+Inf` unconstrained
+coordinate vector; its log-Jacobian is `-Inf`.
+"""
+function TransformVariables.transform_with(flag::TransformVariables.NoLogJac,
+        t::ClosedCorrelationMatrix, x::AbstractVector, index)
+    n = TransformVariables.dimension(t)
+    coordinates = @view x[index:(index + n - 1)]
+    if all(isinf, coordinates) && all(>(zero(eltype(coordinates))), coordinates)
+        return _closed_complete_correlation(eltype(coordinates), t.n), flag, index + n
+    end
+    return TransformVariables.transform_with(flag, t.interior, x, index)
+end
+function TransformVariables.transform_with(::TransformVariables.LogJac,
+        t::ClosedCorrelationMatrix, x::AbstractVector, index)
+    n = TransformVariables.dimension(t)
+    coordinates = @view x[index:(index + n - 1)]
+    if all(isinf, coordinates) && all(>(zero(eltype(coordinates))), coordinates)
+        return _closed_complete_correlation(eltype(coordinates), t.n), -Inf, index + n
+    end
+    return TransformVariables.transform_with(TransformVariables.LogJac(), t.interior, x, index)
+end
+TransformVariables.inverse_eltype(::ClosedCorrelationMatrix,
+    ::Type{M}) where {T,M<:AbstractMatrix{T}} = float(T)
+function TransformVariables.inverse_at!(x::AbstractVector, index,
+        t::ClosedCorrelationMatrix, R::AbstractMatrix)
+    size(R) == (t.n, t.n) || throw(DimensionMismatch("expected a $(t.n) × $(t.n) matrix"))
+    all(isfinite, R) || throw(DomainError(R, "correlation matrix must contain only finite entries"))
+    n = TransformVariables.dimension(t)
+    if _closed_is_complete_correlation(R)
+        fill!(@view(x[index:(index + n - 1)]), Inf)
+        return index + n
+    end
+    try
+        return TransformVariables.inverse_at!(x, index, t.interior, R)
+    catch error
+        error isa LinearAlgebra.PosDefException || rethrow()
+        throw(DomainError(R, "correlation matrix must be positive definite or all ones"))
+    end
+end
+
+struct CompactVariogramMatrix{G} <: TransformVariables.VectorTransform
+    d::Int
+    interior::G
+end
+compact_variogram_matrix(d::Integer) =
+    CompactVariogramMatrix(Int(d), variogram_matrix(d))
+TransformVariables.dimension(t::CompactVariogramMatrix) =
+    TransformVariables.dimension(t.interior)
+
+_compact_zero_variogram(::Type{T}, d::Int) where {T} = zeros(T, d, d)
+function _compact_independence_variogram(::Type{T}, d::Int) where {T}
+    Γ = fill(T(Inf), d, d)
+    @inbounds for i in 1:d
+        Γ[i, i] = zero(T)
+    end
+    return Γ
+end
+_compact_is_zero_variogram(Γ::AbstractMatrix) = all(iszero, Γ)
+function _compact_is_independence_variogram(Γ::AbstractMatrix)
+    d1, d2 = size(Γ)
+    d1 == d2 || return false
+    @inbounds for j in 1:d1, i in 1:d1
+        if i == j
+            iszero(Γ[i, j]) || return false
+        else
+            isinf(Γ[i, j]) && Γ[i, j] > 0 || return false
+        end
+    end
+    return true
+end
+
+"""
+    compact_variogram_matrix(d)
+
+Extend `variogram_matrix(d)` by adjoining the zero variogram and the extended
+independence variogram with `+Inf` off-diagonal entries. They are represented by
+all-`-Inf` and all-`+Inf` unconstrained coordinate vectors respectively; both
+have log-Jacobian `-Inf`.
+"""
+function TransformVariables.transform_with(flag::TransformVariables.NoLogJac,
+        t::CompactVariogramMatrix, x::AbstractVector, index)
+    n = TransformVariables.dimension(t)
+    coordinates = @view x[index:(index + n - 1)]
+    if all(isinf, coordinates)
+        if all(>(zero(eltype(coordinates))), coordinates)
+            return _compact_independence_variogram(eltype(coordinates), t.d), flag, index + n
+        elseif all(<(zero(eltype(coordinates))), coordinates)
+            return _compact_zero_variogram(eltype(coordinates), t.d), flag, index + n
+        end
+    end
+    return TransformVariables.transform_with(flag, t.interior, x, index)
+end
+function TransformVariables.transform_with(::TransformVariables.LogJac,
+        t::CompactVariogramMatrix, x::AbstractVector, index)
+    n = TransformVariables.dimension(t)
+    coordinates = @view x[index:(index + n - 1)]
+    if all(isinf, coordinates)
+        if all(>(zero(eltype(coordinates))), coordinates)
+            return _compact_independence_variogram(eltype(coordinates), t.d), -Inf, index + n
+        elseif all(<(zero(eltype(coordinates))), coordinates)
+            return _compact_zero_variogram(eltype(coordinates), t.d), -Inf, index + n
+        end
+    end
+    return TransformVariables.transform_with(TransformVariables.LogJac(), t.interior, x, index)
+end
+TransformVariables.inverse_eltype(::CompactVariogramMatrix,
+    ::Type{M}) where {T,M<:AbstractMatrix{T}} = float(T)
+function TransformVariables.inverse_at!(x::AbstractVector, index,
+        t::CompactVariogramMatrix, Γ::AbstractMatrix)
+    size(Γ) == (t.d, t.d) || throw(DimensionMismatch("expected a $(t.d) × $(t.d) matrix"))
+    n = TransformVariables.dimension(t)
+    if _compact_is_zero_variogram(Γ)
+        fill!(@view(x[index:(index + n - 1)]), -Inf)
+        return index + n
+    elseif _compact_is_independence_variogram(Γ)
+        fill!(@view(x[index:(index + n - 1)]), Inf)
+        return index + n
+    end
+    all(isfinite, Γ) || throw(DomainError(
+        Γ, "variogram must contain only finite entries except for the independence boundary",
+    ))
+    return TransformVariables.inverse_at!(x, index, t.interior, Γ)
+end
