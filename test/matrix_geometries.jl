@@ -42,7 +42,9 @@ end
     @test complete_logjac == -Inf
 
     independence = fill(Inf, 3, 3)
-    independence[diagind(independence)] .= 0.0
+    for i in axes(independence, 1)
+        independence[i, i] = 0.0
+    end
     independence_coordinates = TV.inverse(geometry, independence)
     @test all(isinf, independence_coordinates)
     @test all(>(0), independence_coordinates)
