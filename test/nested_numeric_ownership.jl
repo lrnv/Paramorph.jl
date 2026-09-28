@@ -149,3 +149,28 @@ end
     @test Paramorph.supports_type_geometry(typeof(parametric))
     @test intrinsic_dimension(parametric) == 1
 end
+
+@testset "public parameter geometry interface" begin
+    child = NestedOwnedPositive(2.0)
+
+    @test has_parameter_geometry(NestedOwnedPositive)
+    @test has_parameter_geometry(child)
+    @test !has_parameter_geometry(OpaqueNestedChild)
+    @test !has_parameter_geometry(OpaqueNestedChild())
+
+    @test parameter_values(child) == (; x=2.0)
+
+    prototype = parameter_prototype(NestedOwnedPositive; numeric_type=Float32)
+    @test prototype isa NestedOwnedPositive{Float32}
+    @test prototype.x ≈ 1.0f0
+
+    contextual = parameter_prototype(
+        NestedOwnedScalar;
+        numeric_type=Float32,
+        context=(; dimension=3),
+    )
+    @test contextual isa NestedOwnedScalar{Float32}
+    @test contextual.θ ≈ 0.5f0
+
+    @test_throws ArgumentError parameter_prototype(OpaqueNestedChild)
+end
