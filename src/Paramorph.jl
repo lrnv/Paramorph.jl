@@ -366,7 +366,10 @@ The explicit numeric parameter `T` is required for ordinary transformed fields.
 It may be omitted for structural wrappers whose parameter fields are all
 `nested`; in that mode each parameter field must be stored through
 a struct type parameter, and reconstruction derives the new concrete wrapper
-type from the reconstructed children.
+type from the reconstructed children. Direct `nested` fields stored through type
+parameters are rebound recursively even when the parent also declares an
+explicit numeric parameter, so one coordinate element type is used throughout
+the nested parameterization.
 
 Geometry expressions may reference type parameters, `context`, and fields of the
 struct. Geometry depending on constrained parameter values requires a prototype;
@@ -455,7 +458,7 @@ macro paramorph(args...)
             "do not mix field-level `~` declarations with a global @geometry declaration",
         )
         geometry_names, global_geometry = geometry_macro
-        all(name -> name in field_names, geometry_names) || error("@geometry names an unknown field")
+        all(name -> name in field_names for name in geometry_names) || error("@geometry names an unknown field")
         field_records = [merge(r, (; is_parameter=r.name in geometry_names)) for r in field_records]
     else
         global_geometry = nothing
@@ -511,15 +514,22 @@ macro paramorph(args...)
         all(r -> _is_structural_geometry(r.geometry), parameter_records) || error(
             "@paramorph without an explicit numeric parameter requires every parameter field to use nested(...)",
         )
+    end
+    if global_geometry === nothing
         for r in parameter_records
-            r.storage isa Symbol && r.storage in type_args || error(
-                "structural parameter field $(r.name) must be stored through a struct type parameter, for example `$(r.name)::C ~ nested()`",
-            )
-            field_owned_type_parameters[r.storage] = r.name
+            _is_structural_geometry(r.geometry) || continue
+            if r.storage isa Symbol && r.storage in type_args
+                field_owned_type_parameters[r.storage] = r.name
+            elseif numeric_index === nothing
+                error(
+                    "structural parameter field $(r.name) must be stored through a struct type parameter, for example `$(r.name)::C ~ nested()`",
+                )
+            end
         end
     end
 
     rebound_type_args = [
+        numeric_parameter !== nothing && arg == numeric_parameter ? N :
         haskey(field_owned_type_parameters, arg) ?
             :(Paramorph.rebind_numeric_type($arg, N)) : arg
         for arg in type_args
@@ -641,8 +651,7 @@ macro paramorph(args...)
         end
     end
 
-
-    # `new` is only legal in an inner constructor.  Reconstruction uses a
+    # `new` is only legal in an inner constructor. Reconstruction uses a
     # private trusted token because the transform has already established that
     # the constrained value belongs to the declared geometry.
     trusted_constructor = quote
@@ -658,15 +667,15 @@ macro paramorph(args...)
         Expr(:struct, false, declaration, struct_body) :
         Expr(:struct, false, Expr(:(<:), declaration, supertype), struct_body)
 
-    # Julia's default outer constructors would bypass geometry validation.  For
+    # Julia's default outer constructors would bypass geometry validation. For
     # the common layout where the numeric parameter is final, also recreate the
     # convenient partially-parameterized constructor and infer the numeric type
     # from the typed field arguments.
     inferred_constructor = nothing
     # Runtime auxiliary fields usually carry domain-level construction semantics
-    # (dimensions, topology, labels, etc.).  Generating an unparameterized outer
+    # (dimensions, topology, labels, etc.). Generating an unparameterized outer
     # constructor for those structs can conflict with intentional package
-    # constructors whose signatures interpret the auxiliary arguments.  Keep
+    # constructors whose signatures interpret the auxiliary arguments. Keep
     # Paramorph responsible only for the fully-parameterized validating
     # constructor in that case.
     if numeric_index == length(type_args) && isempty(auxiliary_names)
@@ -694,7 +703,7 @@ macro paramorph(args...)
         end
     end
 
-    structural_rebind_method = numeric_index === nothing ? quote
+    nested_rebind_method = (numeric_index === nothing || !isempty(field_owned_type_parameters)) ? quote
         function Paramorph.rebind_numeric_type(
             ::Type{S}, ::Type{N},
         ) where {$(type_params...), S<:$struct_name{$(type_args...)}, N<:Real}
@@ -723,7 +732,7 @@ macro paramorph(args...)
         Paramorph.parameter_fields(::Type{<:$struct_name}) = $(QuoteNode(parameter_names))
         Paramorph.auxiliary_fields(::Type{<:$struct_name}) = $(QuoteNode(auxiliary_names))
         Paramorph.numeric_parameter_index(::Type{<:$struct_name}) = $numeric_index
-        $structural_rebind_method
+        $nested_rebind_method
 
         function Paramorph.transformation_schema(
             ::Type{S}, context::NamedTuple=NamedTuple(),
