@@ -51,6 +51,12 @@ For example, constraining with `Float32` coordinates may rebuild
 child does not declare Paramorph geometry, the wrapper remains an ordinary
 constructible Julia object but does not itself expose Paramorph geometry.
 
+Numeric rebinding follows direct `nested` fields recursively. If a node has both
+an explicit numeric parameter of its own and a nested Paramorph child stored
+through another type parameter, both are rebound to the coordinate element type.
+The same rule composes through further nested layers, so one reconstruction uses
+one numeric type for all fit-parameter storage reachable through these fields.
+
 `constraint(Type, θ)` is also available when the parameter geometry is fully
 determined by the type. If a transformation expression depends on runtime
 fields, use a prototype object instead.
