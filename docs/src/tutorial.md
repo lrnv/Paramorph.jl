@@ -180,6 +180,43 @@ end
 intrinsic_dimension(Forest{2,Float64})
 ```
 
+## Integrating Paramorph from another package
+
+Packages using Paramorph should rely on the high-level public interface rather
+than the macro's generated protocol methods.
+
+`has_parameter_geometry` tests whether a concrete type or object currently has a
+usable Paramorph geometry. This matters for structural wrappers: a wrapper whose
+nested child is opaque may be a perfectly valid domain object while having no
+parameter geometry.
+
+`parameter_values` returns the logical constrained values declared by the
+parameterization. These values are the constrained counterpart of
+`unconstrain(object)` and may differ from raw storage when a declaration uses a
+joint or nested geometry.
+
+`parameter_prototype` creates the neutral object associated with zero
+unconstrained coordinates for a type-based geometry. It also owns the numeric
+rebinding needed to select a concrete floating-point representation:
+
+```@example tutorial
+has_parameter_geometry(DimensionBoundChild)
+
+prototype = parameter_prototype(
+    DimensionBoundChild;
+    numeric_type=Float32,
+    context=(; dimension=3),
+)
+(typeof(prototype), parameter_values(prototype))
+```
+
+A domain package can therefore discover geometry, obtain natural declared values,
+and create a fitting prototype without depending on Paramorph's internal
+`is_paramorph_type`, `parameter_fields`, `numeric_parameter_index`, or
+`rebind_numeric_type` protocol. Errors from a declared but broken geometry are
+not converted into absence: `has_parameter_geometry` only answers the capability
+question, while the actual geometry operations still propagate their errors.
+
 ## Coupled fields
 
 Some geometries are genuinely joint rather than Cartesian products of field
