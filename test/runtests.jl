@@ -189,6 +189,7 @@ end
     end
 end
 
+include("nested_numeric_ownership.jl")
 include("matrix_geometries.jl")
 
 Aqua.test_all(Paramorph)
