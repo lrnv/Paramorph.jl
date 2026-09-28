@@ -458,7 +458,7 @@ macro paramorph(args...)
             "do not mix field-level `~` declarations with a global @geometry declaration",
         )
         geometry_names, global_geometry = geometry_macro
-        all(name -> name in field_names for name in geometry_names) || error("@geometry names an unknown field")
+        all(name -> name in field_names, geometry_names) || error("@geometry names an unknown field")
         field_records = [merge(r, (; is_parameter=r.name in geometry_names)) for r in field_records]
     else
         global_geometry = nothing
@@ -529,7 +529,7 @@ macro paramorph(args...)
     end
 
     rebound_type_args = [
-        numeric_parameter !== nothing && arg == numeric_parameter ? N :
+        numeric_parameter !== nothing && arg == numeric_parameter ? :N :
         haskey(field_owned_type_parameters, arg) ?
             :(Paramorph.rebind_numeric_type($arg, N)) : arg
         for arg in type_args
@@ -651,7 +651,8 @@ macro paramorph(args...)
         end
     end
 
-    # `new` is only legal in an inner constructor. Reconstruction uses a
+
+    # `new` is only legal in an inner constructor.  Reconstruction uses a
     # private trusted token because the transform has already established that
     # the constrained value belongs to the declared geometry.
     trusted_constructor = quote
@@ -667,15 +668,15 @@ macro paramorph(args...)
         Expr(:struct, false, declaration, struct_body) :
         Expr(:struct, false, Expr(:(<:), declaration, supertype), struct_body)
 
-    # Julia's default outer constructors would bypass geometry validation. For
+    # Julia's default outer constructors would bypass geometry validation.  For
     # the common layout where the numeric parameter is final, also recreate the
     # convenient partially-parameterized constructor and infer the numeric type
     # from the typed field arguments.
     inferred_constructor = nothing
     # Runtime auxiliary fields usually carry domain-level construction semantics
-    # (dimensions, topology, labels, etc.). Generating an unparameterized outer
+    # (dimensions, topology, labels, etc.).  Generating an unparameterized outer
     # constructor for those structs can conflict with intentional package
-    # constructors whose signatures interpret the auxiliary arguments. Keep
+    # constructors whose signatures interpret the auxiliary arguments.  Keep
     # Paramorph responsible only for the fully-parameterized validating
     # constructor in that case.
     if numeric_index == length(type_args) && isempty(auxiliary_names)
