@@ -17,8 +17,8 @@ field::StorageType ~ geometry
 are auxiliary.
 
 See the [tutorial](tutorial.md) for field-dependent geometry, nested structs,
-wrappers whose numeric type is carried by nested fields, and coupled
-parameterizations.
+wrappers whose numeric type is carried by nested fields, coupled
+parameterizations, and the public integration API for downstream packages.
 
 ## Core interface
 
@@ -67,10 +67,17 @@ child declaration. `recursive([count]; kwargs...)` provides recursive compositio
 for declarations that have an explicit numeric parameter; numeric-less structural
 wrappers in 0.1 use direct `nested` fields.
 
+For package integration, use `has_parameter_geometry`, `parameter_values`, and
+`parameter_prototype` rather than generated protocol details such as numeric type
+indices or rebinding methods.
+
 ## Documented building blocks
 
 ```@docs
 Paramorph.var"@paramorph"
+has_parameter_geometry
+parameter_values
+parameter_prototype
 closed_lower
 open_lower
 nonnegative
