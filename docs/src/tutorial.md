@@ -126,6 +126,38 @@ the geometry:
 constraint(typeof(parent), Float32[0])
 ```
 
+### One numeric type across nested fit parameters
+
+The coordinate element type is propagated through direct `nested` fields at every
+level. This also applies when an intermediate node owns fit parameters itself:
+its explicit numeric parameter and the numeric parameters of nested children are
+rebound together.
+
+```@example tutorial
+@paramorph T struct HybridNode{T<:Real,C<:DimensionBoundChild}
+    own::T ~ TV.asℝ
+    child::C ~ nested(dimension=3)
+end
+
+@paramorph struct HybridOuter{C<:HybridNode}
+    child::C ~ nested()
+end
+
+hybrid = HybridNode{Float64,DimensionBoundChild{Float64}}(
+    0.25,
+    DimensionBoundChild(0.2),
+)
+outer = HybridOuter{typeof(hybrid)}(hybrid)
+rebuilt_outer = constraint(outer, Float32[0, 0])
+typeof(rebuilt_outer)
+```
+
+Here reconstruction from `Float32` coordinates changes both
+`HybridNode{Float64,...}` and its `DimensionBoundChild{Float64}` child to their
+`Float32` counterparts. The rule composes through additional structural wrappers,
+so nested fit parameters do not retain an older numeric type at deeper levels.
+The same invariant applies to type-based reconstruction.
+
 A structural wrapper's Paramorph capability follows its nested children. This
 allows a domain wrapper to accept an opaque extension type without making that
 extension implement Paramorph: the wrapper remains constructible, while
