@@ -25,6 +25,10 @@ export @paramorph,
 
 include("transforms.jl")
 
+_struct_values(object) = NamedTuple{fieldnames(typeof(object))}(
+    Tuple(getfield(object, field) for field in fieldnames(typeof(object))),
+)
+
 # -----------------------------------------------------------------------------
 # Geometry specifications
 # -----------------------------------------------------------------------------
@@ -56,7 +60,7 @@ recursive(count; kwargs...) = RecursiveSpec((; kwargs...), count)
 
 _materialize_geometry(geometry, ::Type, value, ::Bool) = geometry
 _materialize_geometry(spec::NestedSpec, ::Type{T}, value, have_value::Bool) where {T} =
-    have_value ? recursive_schema(value, spec.context) : recursive_schema(T, spec.context)
+    have_value ? recursive_schema(value, T, spec.context) : recursive_schema(T, spec.context)
 _materialize_geometry(spec::RecursiveSpec, ::Type{T}, value, have_value::Bool) where {T} =
     _recursive_collection_schema(spec, T, value, have_value)
 
@@ -81,10 +85,12 @@ recursive_schema(object, context::NamedTuple=NamedTuple()) =
     transformation_schema(object, context)
 recursive_schema(T::Type, context::NamedTuple=NamedTuple()) =
     transformation_schema(T, context)
+recursive_schema(object, T::Type, context::NamedTuple=NamedTuple()) =
+    _schema_from_values(T, _struct_values(object), context)
 
 function _recursive_constraint(spec::NestedSpec, ::Type{T}, constrained, prototype, have_prototype::Bool) where {T}
     if have_prototype
-        return _reconstruct_declared_from_prototype(prototype, typeof(prototype), constrained, spec.context)
+        return _reconstruct_declared_from_prototype(prototype, T, constrained, spec.context)
     end
     return _reconstruct_declared_from_type(T, constrained, spec.context)
 end
@@ -93,7 +99,7 @@ function _recursive_constraint(spec::RecursiveSpec, ::Type{T}, constrained, prot
     E = eltype(T)
     if have_prototype
         return [
-            _reconstruct_declared_from_prototype(prototype[i], typeof(prototype[i]), constrained[i], spec.context)
+            _reconstruct_declared_from_prototype(prototype[i], E, constrained[i], spec.context)
             for i in eachindex(constrained)
         ]
     end
@@ -190,12 +196,8 @@ intrinsic_dimension(T::Type; context=NamedTuple(), auxiliary=NamedTuple()) =
 intrinsic_dimension(object; context=NamedTuple()) =
     TransformVariables.dimension(transformation_schema(object, context))
 
-parameter_values(object; context=NamedTuple()) = begin
-    values = NamedTuple{fieldnames(typeof(object))}(
-        Tuple(getfield(object, field) for field in fieldnames(typeof(object))),
-    )
-    _parameter_values_from_values(typeof(object), values, context)
-end
+parameter_values(object; context=NamedTuple()) =
+    _parameter_values_from_values(typeof(object), _struct_values(object), context)
 
 function constraint(
     T::Type, coordinates::AbstractVector{<:Real};
@@ -211,11 +213,11 @@ function constraint(
 end
 
 function constraint(prototype, coordinates::AbstractVector{<:Real}; context=NamedTuple())
-    schema = transformation_schema(prototype, context)
+    target = rebind_numeric_type(typeof(prototype), eltype(coordinates))
+    schema = _schema_from_values(target, _struct_values(prototype), context)
     length(coordinates) == TransformVariables.dimension(schema) || throw(DimensionMismatch(
         "expected $(TransformVariables.dimension(schema)) coordinates, got $(length(coordinates))",
     ))
-    target = rebind_numeric_type(typeof(prototype), eltype(coordinates))
     constrained = TransformVariables.transform(schema, coordinates)
     return _reconstruct_declared_from_prototype(prototype, target, constrained, context)
 end
@@ -234,12 +236,12 @@ function constraint_with_logjac(
 end
 
 function constraint_with_logjac(prototype, coordinates::AbstractVector{<:Real}; context=NamedTuple())
-    schema = transformation_schema(prototype, context)
+    target = rebind_numeric_type(typeof(prototype), eltype(coordinates))
+    schema = _schema_from_values(target, _struct_values(prototype), context)
     length(coordinates) == TransformVariables.dimension(schema) || throw(DimensionMismatch(
         "expected $(TransformVariables.dimension(schema)) coordinates, got $(length(coordinates))",
     ))
     constrained, logjac = TransformVariables.transform_and_logjac(schema, coordinates)
-    target = rebind_numeric_type(typeof(prototype), eltype(coordinates))
     return _reconstruct_declared_from_prototype(prototype, target, constrained, context), logjac
 end
 
@@ -328,6 +330,19 @@ function _contains_field_reference(expr, fields::Set{Symbol})
     return any(arg -> _contains_field_reference(arg, fields), expr.args)
 end
 
+function _geometry_call_name(expr)
+    expr isa Expr && expr.head == :call || return nothing
+    callee = expr.args[1]
+    callee isa Symbol && return callee
+    if callee isa Expr && callee.head == :.
+        name = last(callee.args)
+        return name isa QuoteNode ? name.value : name
+    end
+    return nothing
+end
+
+_is_structural_geometry(expr) = _geometry_call_name(expr) === :nested
+
 # -----------------------------------------------------------------------------
 # @paramorph
 # -----------------------------------------------------------------------------
@@ -338,18 +353,36 @@ end
         auxiliary::OtherType
     end
 
+    @paramorph struct Wrapper{C}
+        child::C ~ nested()
+    end
+
 Attach a Paramorph parameter geometry to an immutable Julia struct. The storage
 annotation after `::` is ordinary Julia; the expression after `~` is the
 unconstrained-coordinate geometry for that field. Fields without `~` are
 auxiliary and are excluded from the parameter vector.
+
+The explicit numeric parameter `T` is required for ordinary transformed fields.
+It may be omitted for structural wrappers whose parameter fields are all
+`nested`; in that mode each parameter field must be stored through
+a struct type parameter, and reconstruction derives the new concrete wrapper
+type from the reconstructed children.
 
 Geometry expressions may reference type parameters, `context`, and fields of the
 struct. Geometry depending on constrained parameter values requires a prototype;
 geometry depending only on auxiliary fields can be supplied to type-based
 operations with `auxiliary=(; field=value, ...)`.
 """
-macro paramorph(numeric_parameter, expr)
-    numeric_parameter isa Symbol || error("the numeric parameter passed to @paramorph must be a symbol")
+macro paramorph(args...)
+    numeric_parameter, expr = if length(args) == 1
+        nothing, args[1]
+    elseif length(args) == 2
+        args[1], args[2]
+    else
+        error("@paramorph expects `@paramorph T struct ... end` or `@paramorph struct ... end`")
+    end
+    numeric_parameter === nothing || numeric_parameter isa Symbol ||
+        error("the numeric parameter passed to @paramorph must be a symbol")
     expr isa Expr && expr.head == :struct || error("@paramorph must wrap a struct definition")
     expr.args[1] && error("@paramorph does not support mutable structs")
 
@@ -372,11 +405,12 @@ macro paramorph(numeric_parameter, expr)
     struct_name isa Symbol || error("unsupported struct name")
 
     type_args = _type_parameter_parts(type_params)
-    numeric_index = findfirst(==(numeric_parameter), type_args)
-    numeric_index === nothing && error(
+    numeric_index = numeric_parameter === nothing ? nothing :
+                    findfirst(==(numeric_parameter), type_args)
+    numeric_parameter !== nothing && numeric_index === nothing && error(
         "numeric parameter $numeric_parameter must be explicitly declared by the struct",
     )
-    numeric_parameter_decl = type_params[numeric_index]
+    numeric_parameter_decl = numeric_index === nothing ? nothing : type_params[numeric_index]
 
     raw_lines = [line for line in expr.args[3].args if !(line isa LineNumberNode)]
     field_records = NamedTuple[]
@@ -468,6 +502,37 @@ macro paramorph(numeric_parameter, expr)
     end
 
     parameter_records = [r for r in field_records if r.is_parameter]
+
+    field_owned_type_parameters = Dict{Symbol,Symbol}()
+    if numeric_index === nothing
+        global_geometry === nothing || error(
+            "@paramorph without an explicit numeric parameter supports only field-level nested geometry",
+        )
+        all(r -> _is_structural_geometry(r.geometry), parameter_records) || error(
+            "@paramorph without an explicit numeric parameter requires every parameter field to use nested(...)",
+        )
+        for r in parameter_records
+            r.storage isa Symbol && r.storage in type_args || error(
+                "structural parameter field $(r.name) must be stored through a struct type parameter, for example `$(r.name)::C ~ nested()`",
+            )
+            field_owned_type_parameters[r.storage] = r.name
+        end
+    end
+
+    rebound_type_args = [
+        haskey(field_owned_type_parameters, arg) ?
+            :(Paramorph.rebind_numeric_type($arg, N)) : arg
+        for arg in type_args
+    ]
+    rebound_type = isempty(rebound_type_args) ? struct_name :
+                   :($struct_name{$(rebound_type_args...)})
+    structural_child_types = collect(keys(field_owned_type_parameters))
+    structural_capability = isempty(structural_child_types) ? true :
+        reduce((a, b) -> :($a && $b),
+               (:(Paramorph.is_paramorph_type($T)) for T in structural_child_types))
+    structural_type_geometry = isempty(structural_child_types) ? true :
+        reduce((a, b) -> :($a && $b),
+               (:(Paramorph.supports_type_geometry($T)) for T in structural_child_types))
 
     function field_schema_expr(r, value_expr, have_value)
         return :(Paramorph._materialize_geometry(
@@ -576,6 +641,7 @@ macro paramorph(numeric_parameter, expr)
         end
     end
 
+
     # `new` is only legal in an inner constructor.  Reconstruction uses a
     # private trusted token because the transform has already established that
     # the constrained value belongs to the declared geometry.
@@ -628,12 +694,36 @@ macro paramorph(numeric_parameter, expr)
         end
     end
 
-    methods = quote
+    structural_rebind_method = numeric_index === nothing ? quote
+        function Paramorph.rebind_numeric_type(
+            ::Type{S}, ::Type{N},
+        ) where {$(type_params...), S<:$struct_name{$(type_args...)}, N<:Real}
+            return $rebound_type
+        end
+    end : nothing
+
+    capability_methods = numeric_index === nothing ? quote
+        function Paramorph.is_paramorph_type(
+            ::Type{<:$struct_name{$(type_args...)}},
+        ) where {$(type_params...)}
+            return $structural_capability
+        end
+        function Paramorph.supports_type_geometry(
+            ::Type{<:$struct_name{$(type_args...)}},
+        ) where {$(type_params...)}
+            return $(!parameter_dependent) && $structural_type_geometry
+        end
+    end : quote
         Paramorph.is_paramorph_type(::Type{<:$struct_name}) = true
+        Paramorph.supports_type_geometry(::Type{<:$struct_name}) = $(!parameter_dependent)
+    end
+
+    methods = quote
+        $capability_methods
         Paramorph.parameter_fields(::Type{<:$struct_name}) = $(QuoteNode(parameter_names))
         Paramorph.auxiliary_fields(::Type{<:$struct_name}) = $(QuoteNode(auxiliary_names))
-        Paramorph.supports_type_geometry(::Type{<:$struct_name}) = $(!parameter_dependent)
         Paramorph.numeric_parameter_index(::Type{<:$struct_name}) = $numeric_index
+        $structural_rebind_method
 
         function Paramorph.transformation_schema(
             ::Type{S}, context::NamedTuple=NamedTuple(),
@@ -657,7 +747,6 @@ macro paramorph(numeric_parameter, expr)
             $(bind_from_values...)
             return $value_schema_expr
         end
-
         function Paramorph.transformation_schema(
             object::S, context::NamedTuple=NamedTuple(),
         ) where {$(type_params...), S<:$struct_name{$(type_args...)}}
@@ -701,7 +790,9 @@ macro paramorph(numeric_parameter, expr)
 
         function $struct_name{$(type_args...)}($(clean_fields...)) where {$(type_params...)}
             values = $all_values
-            Paramorph._validate_constrained($struct_name{$(type_args...)}, values)
+            if Paramorph.is_paramorph_type($struct_name{$(type_args...)})
+                Paramorph._validate_constrained($struct_name{$(type_args...)}, values)
+            end
             return $struct_name{$(type_args...)}(
                 Paramorph._trusted_construction,
                 $(map(r -> r.name, field_records)...),
