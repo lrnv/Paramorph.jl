@@ -209,3 +209,34 @@ end
 
     @test_throws ArgumentError parameter_prototype(OpaqueNestedChild)
 end
+
+# Regression coverage for package-integration aliases that arrive as a bare
+# UnionAll rather than a concrete numeric specialization.
+const NestedOwnedPositiveFamily = NestedOwnedPositive{T} where {T<:Real}
+
+@paramorph T struct AuxiliarySizedNested{T<:Real}
+    d::Int
+    x::Vector{T} ~ NestedTV.as(Vector, NestedTV.asℝ₊, d)
+end
+
+@paramorph struct AuxiliarySizedWrapper{C<:AuxiliarySizedNested}
+    child::C ~ nested()
+end
+
+@testset "public integration preserves UnionAll and nested auxiliary geometry" begin
+    prototype = parameter_prototype(NestedOwnedPositiveFamily; numeric_type=Float32)
+    @test prototype isa NestedOwnedPositive{Float32}
+
+    child = AuxiliarySizedNested{Float64}(2, [1.0, 2.0])
+    wrapper = AuxiliarySizedWrapper{typeof(child)}(child)
+    coordinates = unconstrain(wrapper)
+
+    rebuilt = constraint(wrapper, coordinates)
+    @test rebuilt.child.d == 2
+    @test rebuilt.child.x ≈ child.x
+
+    rebuilt32 = constraint(wrapper, Float32.(coordinates))
+    @test rebuilt32 isa AuxiliarySizedWrapper{AuxiliarySizedNested{Float32}}
+    @test rebuilt32.child.d == 2
+    @test length(rebuilt32.child.x) == 2
+end
