@@ -53,6 +53,23 @@ struct OpaqueNestedChild end
     child::C ~ nested()
 end
 
+function _minimum_allocated(f; samples=5)
+    f()
+    best = typemax(Int)
+    for _ in 1:samples
+        best = min(best, @allocated f())
+    end
+    return best
+end
+
+function _repeat_constraint(prototype, coordinates, count; context=NamedTuple())
+    result = prototype
+    for _ in 1:count
+        result = constraint(prototype, coordinates; context)
+    end
+    return result
+end
+
 @testset "nested fields can own the numeric type" begin
     child = NestedOwnedScalar(0.2)
     parent = NestedOwnedWrapper{3,typeof(child)}(child)
@@ -72,6 +89,24 @@ end
     with_logjac, logjac = constraint_with_logjac(parent, Float32[0])
     @test with_logjac isa NestedOwnedWrapper{3,NestedOwnedScalar{Float32}}
     @test isfinite(logjac)
+end
+
+@testset "single nested wrappers stay allocation-light" begin
+    child = NestedOwnedScalar(0.2)
+    parent = NestedOwnedWrapper{3,typeof(child)}(child)
+    coordinates = [0.0]
+    repetitions = 64
+
+    child_call = () -> _repeat_constraint(
+        child, coordinates, repetitions; context=(; dimension=3),
+    )
+    parent_call = () -> _repeat_constraint(parent, coordinates, repetitions)
+
+    @test parent_call().child.θ ≈ child_call().θ
+
+    child_bytes = _minimum_allocated(child_call)
+    parent_bytes = _minimum_allocated(parent_call)
+    @test parent_bytes <= child_bytes + 1024
 end
 
 @testset "multiple nested fields determine the rebuilt wrapper type" begin

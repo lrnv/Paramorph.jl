@@ -1,6 +1,6 @@
 name = "Paramorph"
 uuid = "4f407bf5-e3e8-4a0e-b0aa-de5e22a062cc"
-version = "0.1.0"
+version = "0.1.1"
 authors = ["Oskar Laverny"]
 
 [deps]
