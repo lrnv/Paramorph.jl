@@ -21,13 +21,55 @@ differ from raw storage for nested or joint parameterizations.
 """
 function parameter_values end
 
+# A bare UnionAll family can reach the public integration API when a domain
+# package stores a parametric family alias rather than a concrete leaf type.
+# Dispatching the generic Type method on that UnionAll can miss the generated
+# numeric-parameter metadata, so recover it from the unwrapped DataType before
+# rebuilding the requested numeric specialization.
+function rebind_numeric_type(T::UnionAll, ::Type{N}) where {N}
+    U = Base.unwrap_unionall(T)
+    index = numeric_parameter_index(U)
+    index === nothing && return T
+    parameters = collect(U.parameters)
+    index <= length(parameters) || return T
+    parameters[index] = N
+    return Core.apply_type(Base.typename(U).wrapper, parameters...)
+end
+
+# The dense prototype fast path is valid only when the complete nested object
+# graph can derive its geometry from types alone. A structural parent can itself
+# have no auxiliary fields while containing a child whose geometry depends on
+# stored auxiliary state, so inspect nested parameter values recursively before
+# selecting the type-only schema.
+function _value_supports_type_geometry(value)
+    if has_parameter_geometry(value)
+        T = typeof(value)
+        supports_type_geometry(T) || return false
+        isempty(auxiliary_fields(T)) || return false
+        return all(parameter_fields(T)) do field
+            _value_supports_type_geometry(getfield(value, field))
+        end
+    elseif value isa Tuple || value isa AbstractArray
+        return all(_value_supports_type_geometry, value)
+    end
+    return true
+end
+
+function _prototype_supports_type_geometry(target::Type, prototype)
+    supports_type_geometry(target) || return false
+    isempty(auxiliary_fields(target)) || return false
+    return all(parameter_fields(target)) do field
+        _value_supports_type_geometry(getfield(prototype, field))
+    end
+end
+
 # Optimizers overwhelmingly pass dense coordinate vectors. When a prototype's
 # geometry is already fully determined by its concrete type and local context,
 # rebuilding that schema from every stored field only adds work. In particular,
 # purely structural `nested(...)` wrappers can reuse their type geometry while
 # still reconstructing from the prototype so auxiliary storage is preserved.
 function _prototype_constraint_schema(target::Type, prototype, context::NamedTuple)
-    if supports_type_geometry(target) && isempty(auxiliary_fields(target))
+    if _prototype_supports_type_geometry(target, prototype)
         return transformation_schema(target, context)
     end
     return _schema_from_values(target, _struct_values(prototype), context)
