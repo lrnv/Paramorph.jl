@@ -573,7 +573,7 @@ macro paramorph(args...)
             "do not mix field-level `~` declarations with a global @geometry declaration",
         )
         geometry_names, global_geometry = geometry_macro
-        all(name -> name in field_names for name in geometry_names) || error("@geometry names an unknown field")
+        all(name -> name in field_names, geometry_names) || error("@geometry names an unknown field")
         field_records = [merge(r, (; is_parameter=r.name in geometry_names)) for r in field_records]
     else
         global_geometry = nothing
