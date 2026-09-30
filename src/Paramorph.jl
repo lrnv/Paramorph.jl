@@ -431,6 +431,20 @@ function _geometry_needs_prototype(expr)
     end
 end
 
+# A variable-length NTuple can erase its element type when the length is zero,
+# which leaves the numeric type parameter unbound in a generated convenience
+# constructor. Requiring at least one tuple element keeps the same useful
+# inference for ordinary non-empty tuples while the fully parameterized
+# constructor remains responsible for enforcing the structural length.
+function _inferred_parameter_storage(storage, numeric_parameter)
+    if storage isa Expr && storage.head == :curly && length(storage.args) == 3 &&
+       storage.args[1] == :NTuple && storage.args[3] == numeric_parameter &&
+       !(storage.args[2] isa Integer && storage.args[2] > 0)
+        return :(Tuple{$numeric_parameter, Vararg{$numeric_parameter}})
+    end
+    return storage
+end
+
 # -----------------------------------------------------------------------------
 # @paramorph
 # -----------------------------------------------------------------------------
@@ -559,7 +573,7 @@ macro paramorph(args...)
             "do not mix field-level `~` declarations with a global @geometry declaration",
         )
         geometry_names, global_geometry = geometry_macro
-        all(name -> name in field_names, geometry_names) || error("@geometry names an unknown field")
+        all(name -> name in field_names for name in geometry_names) || error("@geometry names an unknown field")
         field_records = [merge(r, (; is_parameter=r.name in geometry_names)) for r in field_records]
     else
         global_geometry = nothing
@@ -830,7 +844,7 @@ macro paramorph(args...)
             proto_value = get(prototype_reconstructed_parameters, r.name, :(getproperty(constrained, $(QuoteNode(r.name)))))
             push!(direct_type_field_values, type_value)
             push!(auxiliary_type_field_values, type_value)
-            push!(prototype_field_values, r.name)
+            push!(prototype_field_values, global_geometry === nothing ? r.name : proto_value)
         else
             direct_default = get(default_auxiliary_values, r.name, :(
                 throw(ArgumentError(string(
@@ -879,7 +893,9 @@ macro paramorph(args...)
         # them untyped makes this convenience constructor less specific than
         # domain constructors that intentionally interpret auxiliary arguments.
         inferred_fields = [
-            r.is_parameter ? :( $(r.name)::$(r.storage) ) : r.name
+            r.is_parameter ? :(
+                $(r.name)::$(_inferred_parameter_storage(r.storage, numeric_parameter))
+            ) : r.name
             for r in field_records
         ]
         inferred_constructor = quote
