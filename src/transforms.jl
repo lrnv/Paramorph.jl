@@ -1,3 +1,79 @@
+# Internal composition used by `@paramorph` when a field geometry depends on
+# parameter fields declared before it. Each builder receives the constrained
+# values already produced during the current traversal.
+struct ConditionalFieldTransform{N,B,R} <: TransformVariables.VectorTransform
+    names::N
+    builders::B
+    reference::R
+end
+
+function _conditional_field_transform(names, builders, reference)
+    return ConditionalFieldTransform(names, builders, reference)
+end
+
+_conditional_singleton(name::Symbol, value) = NamedTuple{(name,)}((value,))
+
+function _conditional_reference_walk(transform::ConditionalFieldTransform, operation)
+    partial = NamedTuple()
+    result = operation === :dimension ? 0 : Bool
+    for (name, builder) in zip(transform.names, transform.builders)
+        local_transform = builder(partial)
+        value = getproperty(transform.reference, name)
+        if operation === :dimension
+            result += TransformVariables.dimension(local_transform)
+        else
+            result = promote_type(
+                result,
+                TransformVariables.inverse_eltype(local_transform, typeof(value)),
+            )
+        end
+        partial = merge(partial, _conditional_singleton(name, value))
+    end
+    return result
+end
+
+TransformVariables.dimension(transform::ConditionalFieldTransform) =
+    _conditional_reference_walk(transform, :dimension)
+TransformVariables.inverse_eltype(transform::ConditionalFieldTransform, ::Type) =
+    _conditional_reference_walk(transform, :inverse_eltype)
+
+function TransformVariables.transform_with(
+    flag::TransformVariables.LogJacFlag,
+    transform::ConditionalFieldTransform,
+    coordinates::AbstractVector,
+    index,
+)
+    values = NamedTuple()
+    logjac = TransformVariables.logjac_zero(flag, eltype(coordinates))
+    for (name, builder) in zip(transform.names, transform.builders)
+        local_transform = builder(values)
+        value, contribution, index = TransformVariables.transform_with(
+            flag, local_transform, coordinates, index,
+        )
+        values = merge(values, _conditional_singleton(name, value))
+        logjac += contribution
+    end
+    return values, logjac, index
+end
+
+function TransformVariables.inverse_at!(
+    coordinates::AbstractVector,
+    index,
+    transform::ConditionalFieldTransform,
+    values::NamedTuple,
+)
+    partial = NamedTuple()
+    for (name, builder) in zip(transform.names, transform.builders)
+        local_transform = builder(partial)
+        value = getproperty(values, name)
+        index = TransformVariables.inverse_at!(
+            coordinates, index, local_transform, value,
+        )
+        partial = merge(partial, _conditional_singleton(name, value))
+    end
+    return index
+end
+
 # Implementation type for `closed_lower`.
 struct ClosedLower{L} <: TransformVariables.ScalarTransform
     lower::L
