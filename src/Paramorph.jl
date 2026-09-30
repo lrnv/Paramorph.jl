@@ -21,6 +21,8 @@ export @paramorph,
     asymmetric_mixed,
     repeat_transform,
     joint_transform,
+    simplex_face,
+    recursive_tree,
     polytope
 
 include("transforms.jl")
@@ -68,7 +70,8 @@ function _recursive_collection_schema(spec::RecursiveSpec, ::Type{T}, value, hav
     if have_value
         children = collect(value)
         schemas = map(children) do child
-            recursive_schema(child, spec.context)
+            has_parameter_geometry(child) ?
+                recursive_schema(child, spec.context) : FixedValueTransform(child)
         end
         return TransformVariables.as(Tuple(schemas))
     end
@@ -96,23 +99,52 @@ function _recursive_constraint(spec::NestedSpec, ::Type{T}, constrained, prototy
 end
 
 function _recursive_constraint(spec::RecursiveSpec, ::Type{T}, constrained, prototype, have_prototype::Bool) where {T}
-    E = eltype(T)
     if have_prototype
-        return [
-            _reconstruct_declared_from_prototype(prototype[i], E, constrained[i], spec.context)
-            for i in eachindex(constrained)
-        ]
+        children = map(eachindex(constrained)) do i
+            child = prototype[i]
+            if has_parameter_geometry(child)
+                N = _constrained_numeric_type(constrained[i])
+                E = N === nothing ? typeof(child) :
+                    rebind_numeric_type(typeof(child), N)
+                _reconstruct_declared_from_prototype(
+                    child, E, constrained[i], spec.context,
+                )
+            else
+                child
+            end
+        end
+        return _rebuild_recursive_collection(T, children)
     end
+    E = eltype(T)
     return [
         _reconstruct_declared_from_type(E, constrained[i], spec.context)
         for i in eachindex(constrained)
     ]
 end
 
+_constrained_numeric_type(value::Real) = typeof(value)
+_constrained_numeric_type(value::AbstractArray{T}) where {T<:Real} = T
+function _constrained_numeric_type(value::Union{Tuple,NamedTuple})
+    for child in value
+        T = _constrained_numeric_type(child)
+        T === nothing || return T
+    end
+    return nothing
+end
+_constrained_numeric_type(value) = nothing
+
+_rebuild_recursive_collection(::Type{<:Tuple}, children) = Tuple(children)
+_rebuild_recursive_collection(::Type{T}, children) where {T<:AbstractVector} =
+    convert(T, collect(children))
+
 _recursive_parameter_value(spec::NestedSpec, value, context) =
     parameter_values(value; context=spec.context)
 _recursive_parameter_value(spec::RecursiveSpec, value, context) =
-    Tuple(parameter_values(child; context=spec.context) for child in value)
+    Tuple(
+        has_parameter_geometry(child) ?
+            parameter_values(child; context=spec.context) : child
+        for child in value
+    )
 
 # Ordinary transforms store their constrained value directly. Nested/recursive
 # specifications instead expose the child's logical parameter value and rebuild
@@ -370,6 +402,13 @@ end
 
 _is_structural_geometry(expr) = _geometry_call_name(expr) === :nested
 
+function _geometry_needs_prototype(expr)
+    _geometry_call_name(expr) === :recursive || return false
+    return all(expr.args[2:end]) do argument
+        argument isa Expr && argument.head == :parameters
+    end
+end
+
 # -----------------------------------------------------------------------------
 # @paramorph
 # -----------------------------------------------------------------------------
@@ -520,6 +559,8 @@ macro paramorph(args...)
     else
         _contains_field_reference(global_geometry, parameter_set)
     end
+    prototype_dependent = global_geometry === nothing &&
+        any(r -> r.is_parameter && _geometry_needs_prototype(r.geometry), field_records)
     auxiliary_dependent = if global_geometry === nothing
         any(r -> r.is_parameter && _contains_field_reference(r.geometry, auxiliary_set), field_records)
     else
@@ -674,7 +715,11 @@ macro paramorph(args...)
 
     value_parameter_expr = :(($(parameter_value_pairs...),))
 
-    type_schema_body = if parameter_dependent
+    type_schema_body = if prototype_dependent
+        :(throw(ArgumentError(string(
+            S, " has prototype-dependent recursive geometry; use a prototype object",
+        ))))
+    elseif parameter_dependent
         :(throw(ArgumentError(string(
             S, " has parameter geometry depending on constrained parameter values; use a prototype object",
         ))))
@@ -787,7 +832,8 @@ macro paramorph(args...)
         end
     end : quote
         Paramorph.is_paramorph_type(::Type{<:$struct_name}) = true
-        Paramorph.supports_type_geometry(::Type{<:$struct_name}) = $(!parameter_dependent)
+        Paramorph.supports_type_geometry(::Type{<:$struct_name}) =
+            $(!parameter_dependent && !prototype_dependent)
     end
 
     methods = quote

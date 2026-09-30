@@ -89,6 +89,8 @@ variogram_matrix
 compact_variogram_matrix
 repeat_transform
 joint_transform
+simplex_face
+recursive_tree
 polytope
 ```
 
