@@ -63,6 +63,16 @@ recursive(count; kwargs...) = RecursiveSpec((; kwargs...), count)
 _materialize_geometry(geometry, ::Type, value, ::Bool) = geometry
 _materialize_geometry(spec::NestedSpec, ::Type{T}, value, have_value::Bool) where {T} =
     have_value ? recursive_schema(value, T, spec.context) : recursive_schema(T, spec.context)
+function _materialize_mixed_geometry(
+    spec::NestedSpec, ::Type{T}, value, have_value::Bool,
+) where {T}
+    if have_value && !has_parameter_geometry(value)
+        return FixedValueTransform(value)
+    end
+    return _materialize_geometry(spec, T, value, have_value)
+end
+_materialize_mixed_geometry(geometry, T::Type, value, have_value::Bool) =
+    _materialize_geometry(geometry, T, value, have_value)
 _materialize_geometry(spec::RecursiveSpec, ::Type{T}, value, have_value::Bool) where {T} =
     _recursive_collection_schema(spec, T, value, have_value)
 
@@ -93,6 +103,7 @@ recursive_schema(object, T::Type, context::NamedTuple=NamedTuple()) =
 
 function _recursive_constraint(spec::NestedSpec, ::Type{T}, constrained, prototype, have_prototype::Bool) where {T}
     if have_prototype
+        has_parameter_geometry(prototype) || return prototype
         return _reconstruct_declared_from_prototype(prototype, T, constrained, spec.context)
     end
     return _reconstruct_declared_from_type(T, constrained, spec.context)
@@ -138,7 +149,7 @@ _rebuild_recursive_collection(::Type{T}, children) where {T<:AbstractVector} =
     convert(T, collect(children))
 
 _recursive_parameter_value(spec::NestedSpec, value, context) =
-    parameter_values(value; context=spec.context)
+    has_parameter_geometry(value) ? parameter_values(value; context=spec.context) : value
 _recursive_parameter_value(spec::RecursiveSpec, value, context) =
     Tuple(
         has_parameter_geometry(child) ?
@@ -389,6 +400,17 @@ function _contains_field_reference(expr, fields::Set{Symbol})
     return any(arg -> _contains_field_reference(arg, fields), expr.args)
 end
 
+function _field_references!(found::Set{Symbol}, expr, fields::Set{Symbol})
+    expr isa Symbol && (expr in fields && push!(found, expr); return found)
+    expr isa QuoteNode && return found
+    expr isa Expr || return found
+    foreach(arg -> _field_references!(found, arg, fields), expr.args)
+    return found
+end
+
+_field_references(expr, fields::Set{Symbol}) =
+    _field_references!(Set{Symbol}(), expr, fields)
+
 function _geometry_call_name(expr)
     expr isa Expr && expr.head == :call || return nothing
     callee = expr.args[1]
@@ -608,6 +630,27 @@ macro paramorph(args...)
 
     parameter_records = [r for r in field_records if r.is_parameter]
 
+    # Cross-field geometries are evaluated in declaration order. A field may
+    # depend on itself through its prototype (for example a masked simplex), or
+    # on parameter fields declared before it. Forward references would require
+    # solving a cyclic constrained system and are therefore rejected.
+    previous_parameters = Set{Symbol}()
+    conditional_geometry = false
+    if global_geometry === nothing
+        for r in parameter_records
+            dependencies = _field_references(r.geometry, parameter_set)
+            delete!(dependencies, r.name)
+            unavailable = setdiff(dependencies, previous_parameters)
+            isempty(unavailable) || error(
+                "geometry for field $(r.name) depends on parameter field(s) " *
+                "$(join(sort!(collect(unavailable)), ", ")) declared after it; " *
+                "declare dependencies first",
+            )
+            conditional_geometry |= !isempty(dependencies)
+            push!(previous_parameters, r.name)
+        end
+    end
+
     field_owned_type_parameters = Dict{Symbol,Symbol}()
     if numeric_index === nothing
         global_geometry === nothing || error(
@@ -647,7 +690,10 @@ macro paramorph(args...)
                (:(Paramorph.supports_type_geometry($T)) for T in structural_child_types))
 
     function field_schema_expr(r, value_expr, have_value)
-        return :(Paramorph._materialize_geometry(
+        materializer = numeric_index === nothing ?
+                       :(Paramorph._materialize_geometry) :
+                       :(Paramorph._materialize_mixed_geometry)
+        return :($materializer(
             $(r.geometry),
             fieldtype(S, $(QuoteNode(r.name))),
             $value_expr,
@@ -655,7 +701,7 @@ macro paramorph(args...)
         ))
     end
 
-    if global_geometry === nothing
+    if global_geometry === nothing && !conditional_geometry
         value_schema_pairs = [
             Expr(:(=), r.name, field_schema_expr(r, :(getproperty(values, $(QuoteNode(r.name)))), true))
             for r in parameter_records
@@ -666,14 +712,51 @@ macro paramorph(args...)
         ]
         value_schema_expr = :(Paramorph.TransformVariables.as(($(value_schema_pairs...),)))
         type_schema_expr = :(Paramorph.TransformVariables.as(($(type_schema_pairs...),)))
-    else
+    elseif global_geometry !== nothing
         value_schema_expr = global_geometry
         type_schema_expr = global_geometry
+    else
+        conditional_builders = map(parameter_records) do r
+            partial_bindings = [:(
+                $name = hasproperty(partial, $(QuoteNode(name))) ?
+                    getproperty(partial, $(QuoteNode(name))) :
+                    getproperty(values, $(QuoteNode(name)))
+            ) for name in field_names]
+            quote
+                partial -> begin
+                    $(partial_bindings...)
+                    $(field_schema_expr(
+                        r,
+                        :(getproperty(values, $(QuoteNode(r.name)))),
+                        true,
+                    ))
+                end
+            end
+        end
+        reference_pairs = [
+            Expr(:(=), r.name, :(
+                Paramorph._parameter_value(
+                    $(r.geometry),
+                    getproperty(values, $(QuoteNode(r.name))),
+                    context,
+                )
+            ))
+            for r in parameter_records
+        ]
+        value_schema_expr = :(
+            Paramorph._conditional_field_transform(
+                $(QuoteNode(parameter_names)),
+                ($(conditional_builders...),),
+                ($(reference_pairs...),),
+            )
+        )
+        type_schema_expr = value_schema_expr
     end
 
     parameter_value_pairs = Any[]
     type_reconstructed_parameters = Dict{Symbol,Any}()
     prototype_reconstructed_parameters = Dict{Symbol,Any}()
+    prototype_reconstruction_bindings = Any[]
 
     if global_geometry === nothing
         for r in parameter_records
@@ -701,6 +784,9 @@ macro paramorph(args...)
                     true,
                 )
             )
+            push!(prototype_reconstruction_bindings, :(
+                $name = $(prototype_reconstructed_parameters[name])
+            ))
         end
     else
         parameter_value_pairs = [
@@ -744,7 +830,7 @@ macro paramorph(args...)
             proto_value = get(prototype_reconstructed_parameters, r.name, :(getproperty(constrained, $(QuoteNode(r.name)))))
             push!(direct_type_field_values, type_value)
             push!(auxiliary_type_field_values, type_value)
-            push!(prototype_field_values, proto_value)
+            push!(prototype_field_values, r.name)
         else
             direct_default = get(default_auxiliary_values, r.name, :(
                 throw(ArgumentError(string(
@@ -912,6 +998,7 @@ macro paramorph(args...)
             prototype::$struct_name, ::Type{S}, constrained::NamedTuple, context::NamedTuple,
         ) where {$(type_params...), S<:$struct_name{$(type_args...)}}
             $(bind_from_prototype...)
+            $(prototype_reconstruction_bindings...)
             object = S(Paramorph._trusted_construction, $(prototype_field_values...))
             $reconstruction_validation
             return object

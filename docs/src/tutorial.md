@@ -184,6 +184,37 @@ Prototype-based `recursive()` fields may also contain heterogeneous children.
 Children that expose parameter geometry contribute their coordinates; opaque
 children are preserved as fixed, zero-dimensional prototype state.
 
+## Geometry conditioned on an earlier field
+
+A field geometry may depend on the newly reconstructed value of a parameter
+field declared before it. Paramorph evaluates these geometries in declaration
+order:
+
+```@example tutorial
+@paramorph T struct ConditionalChild{T<:Real}
+    value::T ~ closed_lower(get(context, :lower, zero(T)))
+end
+
+@paramorph T struct ConditionalModel{C,T<:Real}
+    lower::T ~ TV.asℝ
+    child::C ~ nested(lower=lower)
+end
+
+prototype = ConditionalModel{ConditionalChild{Float64}}(
+    1.0,
+    ConditionalChild(2.0),
+)
+rebuilt = constraint(prototype, Float32[3, 0])
+(rebuilt.lower, rebuilt.child.value)
+```
+
+The result is `(3.0f0, 4.0f0)`: the child transform uses the new `lower` value,
+not `prototype.lower`. Dependencies must be declared first; forward references
+and cycles are rejected. Because the geometry depends on prototype values,
+coordinate operations require a prototype object rather than only the model
+type. The number of coordinates contributed by a conditional field must remain
+constant across admissible conditioning values.
+
 ## Prototype-driven trees
 
 Use `recursive_tree` when the topology comes from a prototype and a child's

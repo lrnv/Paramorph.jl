@@ -26,6 +26,20 @@ end
     θ::T ~ closed_lower(get(context, :lower, -one(T)))
 end
 
+@paramorph T struct ConditionalSiblingGeometry{C,T<:Real}
+    lower::T ~ TV.asℝ
+    child::C ~ nested(lower=lower)
+end
+
+struct OpaqueConditionalChild
+    label::Symbol
+end
+
+@paramorph T struct ConditionalOpaqueSibling{C,T<:Real}
+    lower::T ~ TV.asℝ
+    child::C ~ nested(lower=lower)
+end
+
 @paramorph T struct NestedContextContainer{D,T<:Real}
     child::ContextBoundScalar{T} ~ nested(lower=-inv(T(D - 1)))
 end
@@ -106,6 +120,41 @@ end
         @test y.n == 3
         @test length(y.weights) == 3
         @test sum(y.weights) ≈ 1.0
+    end
+
+    @testset "conditional field geometry" begin
+        prototype = ConditionalSiblingGeometry{ContextBoundScalar{Float64}}(
+            1.0,
+            ContextBoundScalar(2.0),
+        )
+        @test unconstrain(prototype) ≈ [1.0, 0.0]
+
+        rebuilt = constraint(prototype, Float32[3, 0])
+        @test rebuilt isa ConditionalSiblingGeometry{
+            ContextBoundScalar{Float32},Float32,
+        }
+        @test rebuilt.lower === 3.0f0
+        @test rebuilt.child.θ === 4.0f0
+        @test unconstrain(rebuilt) ≈ Float32[3, 0]
+        rebuilt_with_logjac, logjac = constraint_with_logjac(
+            prototype, Float32[3, 0],
+        )
+        @test rebuilt_with_logjac.child.θ === 4.0f0
+        @test logjac ≈ 0.0f0
+
+        @test_throws DomainError ConditionalSiblingGeometry{
+            ContextBoundScalar{Float64},Float64,
+        }(3.0, ContextBoundScalar(2.0))
+        @test_throws ArgumentError intrinsic_dimension(
+            ConditionalSiblingGeometry{ContextBoundScalar{Float64},Float64},
+        )
+
+        opaque = OpaqueConditionalChild(:kept)
+        opaque_prototype = ConditionalOpaqueSibling{typeof(opaque)}(1.0, opaque)
+        @test unconstrain(opaque_prototype) == [1.0]
+        opaque_rebuilt = constraint(opaque_prototype, Float32[3])
+        @test opaque_rebuilt.lower === 3.0f0
+        @test opaque_rebuilt.child === opaque
     end
 
     @testset "opaque runtime vector geometry" begin
