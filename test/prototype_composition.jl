@@ -42,6 +42,26 @@ function rebuild_tree(prototype::ParameterTree, value, children)
 end
 rebuild_tree(prototype::FixedTreeLeaf, value, children) = prototype
 
+module ConstructorRegression
+using Paramorph
+const TV = Paramorph.TransformVariables
+
+function pair_transform()
+    base = TV.as((a=TV.asℝ, b=TV.asℝ))
+    return joint_transform(base, identity, identity)
+end
+
+@paramorph T struct JointPair{T<:Real}
+    a::T
+    b::T
+    @geometry ((a, b) ~ pair_transform())
+end
+
+@paramorph T struct VariableTupleParameter{D,T<:Real}
+    x::NTuple{D,T} ~ TV.as(ntuple(_ -> TV.asℝ, D))
+end
+end
+
 @testset "heterogeneous prototype recursion" begin
     prototype = HeterogeneousComponents{Float64}((
         FreeComponent(2.0),
@@ -63,6 +83,20 @@ rebuild_tree(prototype::FixedTreeLeaf, value, children) = prototype
     @test vector_rebuilt.children[1] isa FreeComponent{Float32}
     @test vector_rebuilt.children[1].x == 4.0f0
     @test vector_rebuilt.children[2] === vector_prototype.children[2]
+end
+
+@testset "joint prototype reconstruction follows constrained numeric type" begin
+    prototype = ConstructorRegression.JointPair(1.0, 2.0)
+    rebuilt = constraint(prototype, Float32[3, 4])
+    @test rebuilt isa ConstructorRegression.JointPair{Float32}
+    @test rebuilt.a === 3.0f0
+    @test rebuilt.b === 4.0f0
+end
+
+@testset "variable NTuple inferred constructor binds numeric type" begin
+    x = ConstructorRegression.VariableTupleParameter{2}((1.0, 2.0))
+    @test x isa ConstructorRegression.VariableTupleParameter{2,Float64}
+    @test isempty(Test.detect_unbound_args(ConstructorRegression; recursive=true))
 end
 
 @testset "masked simplex face" begin
