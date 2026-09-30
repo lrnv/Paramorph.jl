@@ -245,6 +245,32 @@ The transformation must use a named tuple with the fields listed in
 `@geometry`. Field-level `~` declarations and `@geometry` intentionally cannot
 be mixed in the same struct.
 
+## Whole-object validation
+
+Field geometries describe the values produced from unconstrained coordinates.
+Use `@validate` when validity also depends on a relation between reconstructed
+fields:
+
+```@example tutorial
+@paramorph T struct OrderedScales{T<:Real}
+    lower::T ~ TV.asℝ₊
+    upper::T ~ TV.asℝ₊
+    @validate lower < upper
+end
+
+OrderedScales(1.0, 2.0)
+```
+
+The predicate runs for direct construction and after type- or prototype-based
+reconstruction. It may reference every field and `context`. It must return
+`true`, `false`, or `nothing`: `false` produces a `DomainError`, while `nothing`
+allows validation functions that signal failure by throwing their own
+domain-specific exception.
+
+```@example tutorial
+constraint(OrderedScales{Float64}, [0.0, 1.0])
+```
+
 ## Custom transforms need no registration
 
 Because the storage type is explicit, Paramorph does not need a registry that

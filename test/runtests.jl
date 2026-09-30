@@ -190,6 +190,7 @@ end
 end
 
 include("nested_numeric_ownership.jl")
+include("validation_and_unionall.jl")
 include("matrix_geometries.jl")
 
 Aqua.test_all(Paramorph)
