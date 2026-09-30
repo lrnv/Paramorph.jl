@@ -175,8 +175,15 @@ end
 
 function rebind_numeric_type(T::Type, ::Type{N}) where {N}
     index = numeric_parameter_index(T)
-    index === nothing && return T
     U = Base.unwrap_unionall(T)
+    if index === nothing && T isa UnionAll
+        # An alias or `fieldtype` may expose a constrained Paramorph family as
+        # `Model{T} where T`, losing the bound that makes the generated
+        # `Type{<:Model}` metadata method applicable. Recover metadata from the
+        # canonical family wrapper; only the declared numeric slot is rebound.
+        index = numeric_parameter_index(Base.typename(U).wrapper)
+    end
+    index === nothing && return T
     parameters = collect(U.parameters)
     index <= length(parameters) || return T
     parameters[index] = N
@@ -270,6 +277,19 @@ function _validate_constrained(
     return nothing
 end
 
+_validate_invariant(::Type, ::NamedTuple, ::NamedTuple) = nothing
+
+function _check_invariant_result(result, T::Type, expression::String, values::NamedTuple)
+    result === false && throw(DomainError(
+        values,
+        "validation failed for $T: $expression",
+    ))
+    (result === true || result === nothing) || throw(ArgumentError(
+        "validation for $T must return Bool or nothing; got $(typeof(result))",
+    ))
+    return nothing
+end
+
 # Internal token used by reconstruction to bypass user-facing validation after a
 # transformation has already produced a value in the declared constrained space.
 struct TrustedConstruction end
@@ -321,6 +341,13 @@ function _split_geometry_macro(expr)
     end
     all(name -> name isa Symbol, names) || error("@geometry fields must be symbols")
     return names, geometry
+end
+
+function _split_validation_macro(expr)
+    expr isa Expr && expr.head == :macrocall || return nothing
+    expr.args[1] == Symbol("@validate") || return nothing
+    length(expr.args) >= 3 || error("@validate expects a predicate expression")
+    return expr.args[end]
 end
 
 function _contains_field_reference(expr, fields::Set{Symbol})
@@ -375,6 +402,11 @@ Geometry expressions may reference type parameters, `context`, and fields of the
 struct. Geometry depending on constrained parameter values requires a prototype;
 geometry depending only on auxiliary fields can be supplied to type-based
 operations with `auxiliary=(; field=value, ...)`.
+
+An optional `@validate predicate` line declares a whole-object invariant. The
+predicate runs after field reconstruction, may reference every field and
+`context`, and must return `Bool` or `nothing`. Returning `false` raises a
+`DomainError`; a predicate may instead throw its own domain-specific exception.
 """
 macro paramorph(args...)
     numeric_parameter, expr = if length(args) == 1
@@ -418,8 +450,16 @@ macro paramorph(args...)
     raw_lines = [line for line in expr.args[3].args if !(line isa LineNumberNode)]
     field_records = NamedTuple[]
     geometry_macro = nothing
+    validation_macro = nothing
 
     for line in raw_lines
+        validation = _split_validation_macro(line)
+        if validation !== nothing
+            validation_macro === nothing || error("only one @validate declaration is allowed")
+            validation_macro = validation
+            continue
+        end
+
         global_geometry = _split_geometry_macro(line)
         if global_geometry !== nothing
             geometry_macro === nothing || error("only one @geometry declaration is allowed")
@@ -439,7 +479,7 @@ macro paramorph(args...)
         default = has_default ? line.args[2] : nothing
         name = _field_name_from_decl(declaration_line)
         name === nothing && error(
-            "@paramorph struct bodies may contain only typed fields, `field::Type ~ geometry`, and @geometry",
+            "@paramorph struct bodies may contain only typed fields, `field::Type ~ geometry`, @geometry, and @validate",
         )
         push!(field_records, (;
             name,
@@ -491,6 +531,27 @@ macro paramorph(args...)
         :( $(r.name) = getproperty(prototype, $(QuoteNode(r.name))) )
         for r in field_records
     ]
+
+    validation_expression = validation_macro === nothing ? "" : string(validation_macro)
+    validation_body = if validation_macro === nothing
+        :(nothing)
+    else
+        quote
+            $(bind_from_values...)
+            result = $validation_macro
+            Paramorph._check_invariant_result(
+                result, S, $validation_expression, values,
+            )
+        end
+    end
+    direct_validation = validation_macro === nothing ? nothing : :(
+        Paramorph._validate_invariant(
+            $struct_name{$(type_args...)}, values, NamedTuple(),
+        )
+    )
+    reconstruction_validation = validation_macro === nothing ? nothing : :(
+        Paramorph._validate_invariant(S, Paramorph._struct_values(object), context)
+    )
 
     auxiliary_bindings = Any[]
     for r in field_records
@@ -696,6 +757,7 @@ macro paramorph(args...)
                 Paramorph._validate_constrained(
                     $struct_name{$(type_args...)}, values,
                 )
+                $direct_validation
                 return $struct_name{$(type_args...)}(
                     Paramorph._trusted_construction,
                     $(map(r -> r.name, field_records)...),
@@ -773,6 +835,13 @@ macro paramorph(args...)
             return $value_parameter_expr
         end
 
+        function Paramorph._validate_invariant(
+            ::Type{S}, values::NamedTuple, context::NamedTuple,
+        ) where {$(type_params...), S<:$struct_name{$(type_args...)}}
+            $validation_body
+            return nothing
+        end
+
         function Paramorph._reconstruct_declared_from_type(
             ::Type{S}, constrained::NamedTuple, context::NamedTuple,
         ) where {$(type_params...), S<:$struct_name{$(type_args...)}}
@@ -788,14 +857,18 @@ macro paramorph(args...)
                 S, " has value-dependent parameter geometry; use a prototype object",
             )))
             $(auxiliary_bindings...)
-            return S(Paramorph._trusted_construction, $(auxiliary_type_field_values...))
+            object = S(Paramorph._trusted_construction, $(auxiliary_type_field_values...))
+            $reconstruction_validation
+            return object
         end
 
         function Paramorph._reconstruct_declared_from_prototype(
             prototype::$struct_name, ::Type{S}, constrained::NamedTuple, context::NamedTuple,
         ) where {$(type_params...), S<:$struct_name{$(type_args...)}}
             $(bind_from_prototype...)
-            return S(Paramorph._trusted_construction, $(prototype_field_values...))
+            object = S(Paramorph._trusted_construction, $(prototype_field_values...))
+            $reconstruction_validation
+            return object
         end
 
         function $struct_name{$(type_args...)}($(clean_fields...)) where {$(type_params...)}
@@ -803,6 +876,7 @@ macro paramorph(args...)
             if Paramorph.is_paramorph_type($struct_name{$(type_args...)})
                 Paramorph._validate_constrained($struct_name{$(type_args...)}, values)
             end
+            $direct_validation
             return $struct_name{$(type_args...)}(
                 Paramorph._trusted_construction,
                 $(map(r -> r.name, field_records)...),

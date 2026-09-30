@@ -29,6 +29,7 @@ function parameter_values end
 function rebind_numeric_type(T::UnionAll, ::Type{N}) where {N}
     U = Base.unwrap_unionall(T)
     index = numeric_parameter_index(U)
+    index === nothing && (index = numeric_parameter_index(Base.typename(U).wrapper))
     index === nothing && return T
     parameters = collect(U.parameters)
     index <= length(parameters) || return T
