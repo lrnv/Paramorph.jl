@@ -415,6 +415,217 @@ function TransformVariables.inverse_at!(x::AbstractVector, index,
     return index + length(coordinates)
 end
 
+# Zero-dimensional transform used when a prototype-driven recursive collection
+# contains an opaque child. The child is structural state, not an optimizer
+# parameter, and is reproduced exactly.
+struct FixedValueTransform{V} <: TransformVariables.VectorTransform
+    value::V
+end
+TransformVariables.dimension(::FixedValueTransform) = 0
+function TransformVariables.transform_with(
+    flag::TransformVariables.LogJacFlag,
+    transform::FixedValueTransform,
+    x::AbstractVector,
+    index,
+)
+    return transform.value,
+           TransformVariables.logjac_zero(flag, eltype(x)), index
+end
+TransformVariables.inverse_eltype(::FixedValueTransform, ::Type) = Bool
+function TransformVariables.inverse_at!(
+    x::AbstractVector, index, transform::FixedValueTransform, value,
+)
+    isequal(value, transform.value) || throw(DomainError(
+        value,
+        "fixed prototype value cannot be changed",
+    ))
+    return index
+end
+
+"""
+    simplex_face(mask)
+
+Transform Euclidean coordinates to the face of a simplex selected by Boolean
+`mask`. Active entries are positive and sum to one; inactive entries are
+structural zeros. The inverse rejects values outside that face.
+"""
+function simplex_face(mask)
+    active_mask = Bool[mask...]
+    active = findall(active_mask)
+    isempty(active) && throw(ArgumentError("a simplex face needs at least one active entry"))
+    inactive = findall(!, active_mask)
+    base = TransformVariables.UnitSimplex(length(active))
+    forward = function(values)
+        result = zeros(eltype(values), length(active_mask))
+        result[active] .= values
+        return result
+    end
+    backward = function(values)
+        length(values) == length(active_mask) || throw(DimensionMismatch(
+            "expected $(length(active_mask)) simplex entries",
+        ))
+        all(i -> iszero(values[i]), inactive) || throw(DomainError(
+            values,
+            "inactive simplex-face entries must be zero",
+        ))
+        return collect(values[active])
+    end
+    return joint_transform(base, forward, backward)
+end
+
+"""
+    recursive_tree(prototype; node_transform, node_value, children, rebuild)
+
+Build a prototype-driven transformation for a runtime tree. `node_transform`
+is called as `(node, parent_value, index)` and returns the local transform, or
+`nothing` for a fixed node. `node_value` extracts the local constrained value,
+`children` returns its ordered children, and `rebuild` constructs a node as
+`rebuild(prototype_node, new_value, new_children)`.
+
+During forward transformation, child transforms receive the newly reconstructed
+parent value. A four-argument callback `(node, parent_value, index, numeric_type)`
+may use the coordinate element type explicitly; three-argument callbacks remain
+supported. The topology comes from `prototype` and must remain unchanged.
+Local transform dimensions must not change when their parent value changes.
+"""
+struct RecursiveTreeTransform{P,F,V,C,R} <: TransformVariables.VectorTransform
+    prototype::P
+    node_transform::F
+    node_value::V
+    children::C
+    rebuild::R
+end
+
+"""
+    recursive_tree(prototype; node_transform, node_value, children, rebuild)
+
+Construct a prototype-driven recursive tree transformation whose child schemas
+may depend on newly reconstructed parent values.
+"""
+recursive_tree(prototype; node_transform, node_value, children, rebuild) =
+    RecursiveTreeTransform(prototype, node_transform, node_value, children, rebuild)
+
+function _tree_node_transform(transform, node, parent, index::Int, ::Type{N}) where {N}
+    if applicable(transform.node_transform, node, parent, index, N)
+        return transform.node_transform(node, parent, index, N)
+    end
+    return transform.node_transform(node, parent, index)
+end
+
+function _tree_dimension(transform::RecursiveTreeTransform, node, parent, index::Int)
+    value = transform.node_value(node)
+    local_transform = _tree_node_transform(
+        transform, node, parent, index, typeof(value),
+    )
+    dimension = local_transform === nothing ? 0 :
+                TransformVariables.dimension(local_transform)
+    parent_value = value
+    for (i, child) in pairs(transform.children(node))
+        dimension += _tree_dimension(transform, child, parent_value, Int(i))
+    end
+    return dimension
+end
+
+TransformVariables.dimension(transform::RecursiveTreeTransform) =
+    _tree_dimension(transform, transform.prototype, nothing, 1)
+
+function _transform_tree(
+    flag, transform::RecursiveTreeTransform, prototype, parent_value,
+    child_index::Int, coordinates, index,
+)
+    local_transform = _tree_node_transform(
+        transform, prototype, parent_value, child_index, eltype(coordinates),
+    )
+    if local_transform === nothing
+        value = transform.node_value(prototype)
+        logjac = TransformVariables.logjac_zero(flag, eltype(coordinates))
+    else
+        value, logjac, index = TransformVariables.transform_with(
+            flag, local_transform, coordinates, index,
+        )
+    end
+
+    prototype_children = transform.children(prototype)
+    rebuilt_children = map(eachindex(prototype_children)) do i
+        child = prototype_children[i]
+        rebuilt, contribution, index = _transform_tree(
+            flag, transform, child, value, Int(i), coordinates, index,
+        )
+        logjac += contribution
+        return rebuilt
+    end
+    return transform.rebuild(prototype, value, rebuilt_children), logjac, index
+end
+
+function TransformVariables.transform_with(
+    flag::TransformVariables.LogJacFlag,
+    transform::RecursiveTreeTransform,
+    coordinates::AbstractVector,
+    index,
+)
+    return _transform_tree(
+        flag, transform, transform.prototype, nothing, 1, coordinates, index,
+    )
+end
+
+function _tree_inverse_eltype(transform::RecursiveTreeTransform, node, parent, index::Int)
+    value = transform.node_value(node)
+    local_transform = _tree_node_transform(
+        transform, node, parent, index, typeof(value),
+    )
+    T = local_transform === nothing ? Bool : TransformVariables.inverse_eltype(
+        local_transform,
+        typeof(value),
+    )
+    parent_value = value
+    for (i, child) in pairs(transform.children(node))
+        T = promote_type(T, _tree_inverse_eltype(
+            transform, child, parent_value, Int(i),
+        ))
+    end
+    return T
+end
+
+TransformVariables.inverse_eltype(transform::RecursiveTreeTransform, ::Type) =
+    _tree_inverse_eltype(transform, transform.prototype, nothing, 1)
+
+function _inverse_tree!(
+    coordinates, index, transform::RecursiveTreeTransform,
+    node, prototype_node, parent_value, child_index::Int,
+)
+    value = transform.node_value(node)
+    local_transform = _tree_node_transform(
+        transform, node, parent_value, child_index, typeof(value),
+    )
+    if local_transform !== nothing
+        index = TransformVariables.inverse_at!(
+            coordinates, index, local_transform, value,
+        )
+    end
+    node_children = transform.children(node)
+    prototype_children = transform.children(prototype_node)
+    length(node_children) == length(prototype_children) || throw(DimensionMismatch(
+        "recursive tree topology differs from its prototype",
+    ))
+    for (i, child) in pairs(node_children)
+        index = _inverse_tree!(
+            coordinates, index, transform, child, prototype_children[i], value, Int(i),
+        )
+    end
+    return index
+end
+
+function TransformVariables.inverse_at!(
+    coordinates::AbstractVector,
+    index,
+    transform::RecursiveTreeTransform,
+    tree,
+)
+    return _inverse_tree!(
+        coordinates, index, transform, tree, transform.prototype, nothing, 1,
+    )
+end
+
 # Implementation type for `polytope`.
 struct PolytopeTransform{MA,VB,VC} <: TransformVariables.VectorTransform
     A::MA

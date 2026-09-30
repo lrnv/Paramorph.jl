@@ -180,6 +180,44 @@ end
 intrinsic_dimension(Forest{2,Float64})
 ```
 
+Prototype-based `recursive()` fields may also contain heterogeneous children.
+Children that expose parameter geometry contribute their coordinates; opaque
+children are preserved as fixed, zero-dimensional prototype state.
+
+## Prototype-driven trees
+
+Use `recursive_tree` when the topology comes from a prototype and a child's
+geometry depends on its newly reconstructed parent. The API is callback-based:
+the application supplies accessors for local values and children, a local
+transform factory, and a rebuilding function. Paramorph owns traversal,
+flattening, inversion, log-Jacobian accumulation, and coordinate numeric types.
+
+```julia
+transform = recursive_tree(
+    prototype;
+    node_transform=(node, parent, index, T) ->
+        closed_lower(parent === nothing ? zero(T) : T(parent)),
+    node_value=node -> node.value,
+    children=node -> node.children,
+    rebuild=(node, value, children) -> Node(value, children),
+)
+```
+
+The topology must remain fixed, and local transform dimensions must not change
+when parent values change. Returning `nothing` from `node_transform` makes a
+node fixed while recursion may continue through its children.
+
+## Structural simplex faces
+
+`simplex_face(mask)` parameterizes only the active face selected by `mask` and
+reinserts exact zeros elsewhere:
+
+```@example tutorial
+face = simplex_face((false, true, true))
+weights = [0.0, 0.4, 0.6]
+TV.transform(face, TV.inverse(face, weights))
+```
+
 ## Integrating Paramorph from another package
 
 Packages using Paramorph should rely on the high-level public interface rather
